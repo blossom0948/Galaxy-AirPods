@@ -1,0 +1,164 @@
+package com.galaxyairpods.ui.components
+
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.dp
+import com.galaxyairpods.domain.model.AirPodsState
+import com.galaxyairpods.domain.model.BatterySlot
+import com.galaxyairpods.domain.model.DataConfidence
+import kotlinx.coroutines.delay
+
+@Composable
+fun BatteryGrid(
+    state: AirPodsState,
+    modifier: Modifier = Modifier,
+    reveal: Boolean = true,
+    staggerMs: Long = 35L,
+) {
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        BatteryItem(
+            slot = BatterySlot.LEFT,
+            battery = state.leftBattery,
+            charging = state.leftCharging == true,
+            confidence = state.confidence,
+            reveal = reveal,
+            revealDelayMs = 0L,
+            modifier = Modifier.weight(1f),
+        )
+        BatteryItem(
+            slot = BatterySlot.RIGHT,
+            battery = state.rightBattery,
+            charging = state.rightCharging == true,
+            confidence = state.confidence,
+            reveal = reveal,
+            revealDelayMs = staggerMs,
+            modifier = Modifier.weight(1f),
+        )
+        BatteryItem(
+            slot = BatterySlot.CASE,
+            battery = state.caseBattery,
+            charging = state.caseCharging == true,
+            confidence = state.confidence,
+            reveal = reveal,
+            revealDelayMs = staggerMs * 2,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+@Composable
+fun BatteryItem(
+    slot: BatterySlot,
+    battery: Int?,
+    charging: Boolean,
+    confidence: DataConfidence,
+    reveal: Boolean,
+    revealDelayMs: Long,
+    modifier: Modifier = Modifier,
+) {
+    var itemVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(reveal, revealDelayMs) {
+        if (reveal) {
+            delay(revealDelayMs)
+            itemVisible = true
+        } else {
+            itemVisible = false
+        }
+    }
+
+    val alpha by animateFloatAsState(
+        targetValue = if (itemVisible) 1f else 0f,
+        animationSpec = tween(160),
+        label = "${slot.name}-alpha",
+    )
+    val progress by animateFloatAsState(
+        targetValue = (battery ?: 0).coerceIn(0, 100) / 100f,
+        animationSpec = tween(520),
+        label = "${slot.name}-ring",
+    )
+    val accent = when {
+        battery == null -> MaterialTheme.colorScheme.onSurfaceVariant
+        battery <= 20 -> Color(0xFFFFB4AB)
+        else -> MaterialTheme.colorScheme.primary
+    }
+
+    Surface(
+        modifier = modifier
+            .semantics { contentDescription = "${slot.label} 배터리 ${battery?.let { "$it 퍼센트" } ?: "확인 불가"}" },
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = alpha),
+    ) {
+        Column(
+            modifier = Modifier.padding(vertical = 12.dp, horizontal = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            BatteryRing(
+                progress = progress,
+                accent = accent,
+                modifier = Modifier.size(40.dp),
+            )
+            Spacer(Modifier.height(5.dp))
+            Text(slot.label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha))
+            Text(
+                text = battery?.let { "$it%" } ?: "--",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha),
+            )
+            if (charging) {
+                Text("충전 중", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary.copy(alpha = alpha))
+            } else if (battery == null) {
+                Text("데이터 없음", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha))
+            }
+        }
+    }
+}
+
+@Composable
+fun BatteryRing(
+    progress: Float,
+    accent: Color,
+    modifier: Modifier = Modifier,
+) {
+    Canvas(modifier) {
+        drawArc(
+            color = accent.copy(alpha = 0.18f),
+            startAngle = -90f,
+            sweepAngle = 360f,
+            useCenter = false,
+            style = Stroke(width = 5.dp.toPx()),
+        )
+        drawArc(
+            color = accent,
+            startAngle = -90f,
+            sweepAngle = 360f * progress,
+            useCenter = false,
+            style = Stroke(width = 5.dp.toPx()),
+        )
+    }
+}
