@@ -22,6 +22,30 @@ class AirPodsAdvertisementParserTest {
     }
 
     @Test
+    fun decodesFirmwareVariantWithSevenPayloadPrefix() {
+        val packet = AppleAirPodsParser.parseManufacturerData(
+            "0719070e2075aa3001000045121212000000000000000000000000".hex(),
+        )
+
+        requireNotNull(packet)
+        assertEquals(AirPodsModel.AIRPODS_PRO, packet.model)
+        assertEquals(100, packet.leftBattery)
+        assertEquals(100, packet.rightBattery)
+    }
+
+    @Test
+    fun decodesPairingVariantWithZeroPayloadPrefix() {
+        val packet = AppleAirPodsParser.parseManufacturerData(
+            "0719000e202b668f01000500000000000000000000000000000000".hex(),
+        )
+
+        requireNotNull(packet)
+        assertEquals(AirPodsModel.AIRPODS_PRO, packet.model)
+        assertEquals(60, packet.leftBattery)
+        assertEquals(60, packet.rightBattery)
+    }
+
+    @Test
     fun rejectsNonAirPodsManufacturerData() {
         val packet = AppleAirPodsParser.parseManufacturerData(
             "0201060303aafe".hex(),

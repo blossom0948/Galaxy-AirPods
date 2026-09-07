@@ -39,7 +39,6 @@ fun HomeScreen(
     state: AirPodsState,
     scanStatus: String,
     onStartScanning: () -> Unit,
-    onOpenDiagnostics: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -69,6 +68,13 @@ fun HomeScreen(
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                state.deviceName?.takeIf { it.isNotBlank() }?.let { deviceName ->
+                    Text(
+                        deviceName,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             StatusDot(state = state)
         }
@@ -129,16 +135,8 @@ fun HomeScreen(
             }
         }
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Button(onClick = onStartScanning, modifier = Modifier.weight(1f)) {
-                Text("다시 검색")
-            }
-            OutlinedButton(onClick = onOpenDiagnostics, modifier = Modifier.weight(1f)) {
-                Text("진단")
-            }
+        Button(onClick = onStartScanning, modifier = Modifier.fillMaxWidth()) {
+            Text("다시 검색")
         }
         OutlinedButton(onClick = onOpenSettings, modifier = Modifier.fillMaxWidth()) {
             Text("설정")

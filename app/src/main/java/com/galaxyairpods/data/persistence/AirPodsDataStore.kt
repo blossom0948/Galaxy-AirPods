@@ -36,6 +36,7 @@ class AirPodsDataStore(private val context: Context) {
         val caseOpen = booleanPreferencesKey("case_open")
         val connected = booleanPreferencesKey("connected")
         val detected = booleanPreferencesKey("detected")
+        val deviceName = stringPreferencesKey("device_name")
         val lastSeenAt = longPreferencesKey("last_seen_at")
         val confidence = stringPreferencesKey("confidence")
         val autoPopup = booleanPreferencesKey("auto_popup")
@@ -66,6 +67,7 @@ class AirPodsDataStore(private val context: Context) {
                     caseOpen = preferences[Keys.caseOpen],
                     connected = preferences[Keys.connected] ?: false,
                     detected = preferences[Keys.detected] ?: false,
+                    deviceName = preferences[Keys.deviceName],
                     lastSeenAt = preferences[Keys.lastSeenAt],
                     confidence = preferences[Keys.confidence]?.let { value ->
                         DataConfidence.entries.firstOrNull { it.name == value }
@@ -117,6 +119,7 @@ class AirPodsDataStore(private val context: Context) {
             preferences.putNullable(Keys.caseOpen, state.caseOpen)
             preferences[Keys.connected] = state.connected
             preferences[Keys.detected] = state.detected
+            preferences.putNullable(Keys.deviceName, state.deviceName)
             preferences.putNullable(Keys.lastSeenAt, state.lastSeenAt)
             preferences[Keys.confidence] = state.confidence.name
         }

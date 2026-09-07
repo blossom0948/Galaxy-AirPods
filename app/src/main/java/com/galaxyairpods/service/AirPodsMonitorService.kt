@@ -7,7 +7,6 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.galaxyairpods.MainActivity
@@ -45,6 +44,7 @@ class AirPodsMonitorService : Service() {
         createNotificationChannel()
         startForegroundCompat(buildNotification(AirPodsState.empty()))
         observePackets()
+        observeBluetoothConnections()
         scanner.start(android.bluetooth.le.ScanSettings.SCAN_MODE_LOW_POWER)
     }
 
@@ -78,6 +78,30 @@ class AirPodsMonitorService : Service() {
         }
     }
 
+    private fun observeBluetoothConnections() {
+        serviceScope.launch {
+            scanner.bluetoothEvents.collect { event ->
+                val previous = repository.state.value
+                repository.applyBluetoothConnection(event)
+                val current = repository.state.value
+                val override = dataStore.modelOverride.first()
+                val displayState = current.copy(model = override ?: current.model)
+
+                updateNotification(displayState)
+                AirPodsWidget.updateState(
+                    context = this@AirPodsMonitorService,
+                    left = displayState.leftBattery,
+                    right = displayState.rightBattery,
+                    caseBattery = displayState.caseBattery,
+                    modelLabel = displayState.model.label,
+                )
+
+                val connectedNow = event.connected && !previous.connected
+                if (connectedNow) showOverlayIfPermitted()
+            }
+        }
+    }
+
     private fun showOverlayIfPermitted() {
         if (!android.provider.Settings.canDrawOverlays(this)) return
         runCatching {
@@ -92,7 +116,11 @@ class AirPodsMonitorService : Service() {
 
     private fun buildNotification(state: AirPodsState): Notification {
         val batteryText = if (!state.hasAnyBattery) {
-            "AirPods 검색 중"
+            when {
+                state.connected -> "연결됨 · 배터리 정보 대기 중"
+                state.detected -> "페어링됨 · 연결 대기"
+                else -> "AirPods 검색 중"
+            }
         } else {
             listOf(
                 state.leftBattery?.let { "L " + it + "%" },
@@ -120,7 +148,6 @@ class AirPodsMonitorService : Service() {
     }
 
     private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         getSystemService(NotificationManager::class.java)?.createNotificationChannel(
             NotificationChannel(
                 CHANNEL_ID,
@@ -134,15 +161,11 @@ class AirPodsMonitorService : Service() {
 
     private fun startForegroundCompat(notification: Notification) {
         runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                startForeground(
-                    NOTIFICATION_ID,
-                    notification,
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
-                )
-            } else {
-                startForeground(NOTIFICATION_ID, notification)
-            }
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+            )
         }.onFailure {
             stopSelf()
         }
