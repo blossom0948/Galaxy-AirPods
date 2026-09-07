@@ -1,11 +1,13 @@
 package com.galaxyairpods.update
 
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageInstaller
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
-import androidx.core.content.FileProvider
 import com.galaxyairpods.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -13,6 +15,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileInputStream
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -86,16 +89,44 @@ class UpdateManager(private val context: Context) {
             return
         }
 
-        val uri = FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.fileprovider",
-            file,
-        )
-        val installIntent = Intent(Intent.ACTION_VIEW)
-            .setDataAndType(uri, APK_MIME_TYPE)
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        context.startActivity(installIntent)
+        val packageInstaller = context.packageManager.packageInstaller
+        val params = PackageInstaller.SessionParams(
+            PackageInstaller.SessionParams.MODE_FULL_INSTALL,
+        ).apply {
+            setAppPackageName(context.packageName)
+            setInstallReason(PackageManager.INSTALL_REASON_USER)
+        }
+        val sessionId = packageInstaller.createSession(params)
+
+        try {
+            packageInstaller.openSession(sessionId).use { session ->
+                FileInputStream(file).use { input ->
+                    session.openWrite("base.apk", 0, file.length()).use { output ->
+                        input.copyTo(output)
+                        session.fsync(output)
+                    }
+                }
+
+                val callbackIntent = Intent(context, UpdateInstallReceiver::class.java)
+                    .setAction(UpdateInstallReceiver.ACTION_INSTALL_STATUS)
+                val pendingIntentFlags = PendingIntent.FLAG_UPDATE_CURRENT or
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        PendingIntent.FLAG_MUTABLE
+                    } else {
+                        0
+                    }
+                val statusIntent = PendingIntent.getBroadcast(
+                    context,
+                    sessionId,
+                    callbackIntent,
+                    pendingIntentFlags,
+                )
+                session.commit(statusIntent.intentSender)
+            }
+        } catch (error: Throwable) {
+            runCatching { packageInstaller.abandonSession(sessionId) }
+            throw error
+        }
     }
 
     private fun readText(urlString: String): String {
@@ -167,6 +198,5 @@ class UpdateManager(private val context: Context) {
     companion object {
         private const val MANIFEST_URL =
             "https://raw.githubusercontent.com/blossom0948/Galaxy-AirPods/main/update.json"
-        private const val APK_MIME_TYPE = "application/vnd.android.package-archive"
     }
 }
