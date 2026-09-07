@@ -69,6 +69,11 @@ class UpdateManager(private val context: Context) {
         }
     }
 
+    fun installReady(file: File) {
+        runCatching { install(file) }
+            .onFailure { _state.value = UpdateState.Error("업데이트 설치를 시작하지 못했습니다") }
+    }
+
     private fun install(file: File) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
             !context.packageManager.canRequestPackageInstalls()
@@ -109,18 +114,31 @@ class UpdateManager(private val context: Context) {
 
         val total = connection.contentLengthLong
         var copied = 0L
-        connection.inputStream.use { input ->
-            target.outputStream().use { output ->
-                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                while (true) {
-                    val count = input.read(buffer)
-                    if (count < 0) break
-                    output.write(buffer, 0, count)
-                    copied += count
-                    val progress = if (total > 0) (copied * 100 / total).toInt() else 0
-                    _state.value = UpdateState.Downloading(info, progress.coerceIn(0, 99))
+        try {
+            connection.inputStream.use { input ->
+                target.outputStream().use { output ->
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    while (total <= 0L || copied < total) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        val remaining = if (total > 0L) {
+                            (total - copied).toInt().coerceAtMost(count)
+                        } else {
+                            count
+                        }
+                        output.write(buffer, 0, remaining)
+                        copied += remaining
+                        val progress = if (total > 0) (copied * 100 / total).toInt() else 0
+                        _state.value = UpdateState.Downloading(info, progress.coerceIn(0, 99))
+                    }
                 }
             }
+            if (total > 0L && copied != total) {
+                error("APK 다운로드가 끝나기 전에 연결이 종료되었습니다")
+            }
+            _state.value = UpdateState.Downloading(info, 100)
+        } finally {
+            connection.disconnect()
         }
     }
 

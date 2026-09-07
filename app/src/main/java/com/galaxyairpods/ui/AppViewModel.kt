@@ -161,6 +161,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { updateManager.downloadAndInstall(info) }
     }
 
+    fun installReadyUpdate(ready: UpdateState.Ready) {
+        updateManager.installReady(ready.file)
+    }
+
     fun testOverlay() {
         val context = getApplication<Application>()
         if (Settings.canDrawOverlays(context)) {

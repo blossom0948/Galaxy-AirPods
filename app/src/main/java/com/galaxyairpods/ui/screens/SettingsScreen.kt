@@ -53,6 +53,7 @@ fun SettingsScreen(
     updateState: UpdateState,
     onCheckForUpdates: () -> Unit,
     onInstallUpdate: (UpdateInfo) -> Unit,
+    onInstallReady: (UpdateState.Ready) -> Unit,
 ) {
     val context = LocalContext.current
     val overlayGranted = Settings.canDrawOverlays(context)
@@ -68,7 +69,7 @@ fun SettingsScreen(
 
         ModelSelector(modelOverride, onModelOverrideChange)
 
-        UpdateCard(updateState, onCheckForUpdates, onInstallUpdate)
+        UpdateCard(updateState, onCheckForUpdates, onInstallUpdate, onInstallReady)
 
         SettingsToggle("자동 팝업", autoPopup, onAutoPopupChange)
         SettingsToggle("케이스를 열 때 표시", showOnCaseOpen, onCaseOpenChange)
@@ -132,6 +133,7 @@ private fun UpdateCard(
     state: UpdateState,
     onCheckForUpdates: () -> Unit,
     onInstallUpdate: (UpdateInfo) -> Unit,
+    onInstallReady: (UpdateState.Ready) -> Unit,
 ) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp)) {
@@ -149,7 +151,12 @@ private fun UpdateCard(
                 is UpdateState.Downloading -> {
                     Text("다운로드 중 ${state.progress}%")
                 }
-                is UpdateState.Ready -> Text("설치 준비 완료")
+                is UpdateState.Ready -> {
+                    Text("다운로드 완료")
+                    Button(onClick = { onInstallReady(state) }) {
+                        Text("설치 계속")
+                    }
+                }
                 is UpdateState.Error -> {
                     Text(state.message, color = MaterialTheme.colorScheme.error)
                     Button(onClick = onCheckForUpdates) { Text("다시 확인") }
