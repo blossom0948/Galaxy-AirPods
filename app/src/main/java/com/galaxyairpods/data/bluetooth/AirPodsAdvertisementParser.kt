@@ -18,8 +18,10 @@ interface AirPodsPacketParser {
  * Android exposes the Apple company identifier (0x004C) as the key of the
  * manufacturer-data map and the remaining bytes as the value. The value is a
  * Continuity message: [type, length, payload]. AirPods status broadcasts use
- * type 0x07. The first payload byte varies between firmware generations
- * (commonly 0x00, 0x01, or 0x07), so the stable model/status offsets are used.
+ * type 0x07. Official AirPods status broadcasts use the 0x01 payload prefix
+ * and a 25-byte payload. Other 0x07 frames are emitted by Apple devices during
+ * connection/address transitions, but do not contain the public battery fields
+ * at these offsets; accepting them creates false devices and wipes real data.
  */
 class AppleAirPodsParser : AirPodsPacketParser {
     override val parserVersion: String = "apple-proximity-v1"
@@ -42,7 +44,7 @@ class AppleAirPodsParser : AirPodsPacketParser {
 
         private const val PROXIMITY_MESSAGE_TYPE = 0x07
         private const val PLAINTEXT_STATUS_PREFIX = 0x01
-        private const val PAIRING_MODE_PREFIX = 0x00
+        private const val AIRPODS_STATUS_LENGTH = 25
 
         private val MODEL_CODES = mapOf(
             0x0220 to AirPodsModel.AIRPODS_GEN1,
@@ -71,12 +73,9 @@ class AppleAirPodsParser : AirPodsPacketParser {
                 val payloadEnd = payloadStart + length
                 if (payloadEnd > bytes.size) return null
 
-                if (type == PROXIMITY_MESSAGE_TYPE && length >= 9) {
+                if (type == PROXIMITY_MESSAGE_TYPE && length == AIRPODS_STATUS_LENGTH) {
                     val payload = bytes.copyOfRange(payloadStart, payloadEnd)
-                    if (payload[0].u8() == PLAINTEXT_STATUS_PREFIX ||
-                        payload[0].u8() == PROXIMITY_MESSAGE_TYPE ||
-                        payload[0].u8() == PAIRING_MODE_PREFIX
-                    ) {
+                    if (payload[0].u8() == PLAINTEXT_STATUS_PREFIX) {
                         return decodePayload(payload)
                     }
                 }
@@ -127,7 +126,11 @@ class AppleAirPodsParser : AirPodsPacketParser {
             val onePodInCase = status and 0x10 != 0
             val bothPodsInCase = status and 0x04 != 0
             val caseContext = thisPodInCase || onePodInCase || bothPodsInCase
-            val caseOpen = if (caseContext) {
+            // A frame with only bit 4 set is emitted by the pod outside the case
+            // and carries a stale lid byte. Only an in-case pod (bit 6) or a
+            // frame with both pods in the case (bit 2) can reliably report the lid.
+            val lidReadingReliable = thisPodInCase || bothPodsInCase
+            val caseOpen = if (caseContext && lidReadingReliable) {
                 ((payload[6].u8() shr 3) and 0x01) == 0
             } else {
                 null

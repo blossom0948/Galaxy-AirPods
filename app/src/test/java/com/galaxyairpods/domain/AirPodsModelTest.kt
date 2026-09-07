@@ -1,6 +1,7 @@
 package com.galaxyairpods.domain
 
 import com.galaxyairpods.domain.model.AirPodsModel
+import com.galaxyairpods.domain.model.isCompatibleWith
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -26,6 +27,22 @@ class AirPodsModelTest {
         assertEquals(
             AirPodsModel.AIRPODS,
             AirPodsModel.fromBluetoothName("AirPods"),
+        )
+    }
+
+    @Test
+    fun bleAndClassicProfilesCanRepresentTheSameAirPodsFamily() {
+        assertEquals(
+            true,
+            AirPodsModel.AIRPODS_PRO2.isCompatibleWith(AirPodsModel.AIRPODS_PRO),
+        )
+        assertEquals(
+            true,
+            AirPodsModel.AIRPODS_PRO2.isCompatibleWith(AirPodsModel.AIRPODS),
+        )
+        assertEquals(
+            false,
+            AirPodsModel.AIRPODS_PRO2.isCompatibleWith(AirPodsModel.AIRPODS_GEN3),
         )
     }
 }

@@ -53,6 +53,21 @@ val AirPodsModel.isPro: Boolean
         this == AirPodsModel.AIRPODS_PRO2_USBC ||
         this == AirPodsModel.AIRPODS_PRO3
 
+/**
+ * BLE advertisements and classic Bluetooth profiles do not expose the same
+ * address or always use the same product name. Treat a generic name, or two
+ * generations in the same product family, as the same logical AirPods set so
+ * a profile update cannot erase a battery packet received from BLE.
+ */
+fun AirPodsModel.isCompatibleWith(other: AirPodsModel): Boolean = when {
+    this == other -> true
+    this == AirPodsModel.AIRPODS || this == AirPodsModel.UNKNOWN -> true
+    other == AirPodsModel.AIRPODS || other == AirPodsModel.UNKNOWN -> true
+    this.isPro && other.isPro -> true
+    this.isMax && other.isMax -> true
+    else -> false
+}
+
 enum class DataConfidence(val label: String) {
     LIVE("실시간"),
     RECENT("최근 확인"),

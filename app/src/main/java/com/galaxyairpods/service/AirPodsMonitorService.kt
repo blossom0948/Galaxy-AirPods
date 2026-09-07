@@ -12,6 +12,8 @@ import androidx.core.app.NotificationCompat
 import com.galaxyairpods.MainActivity
 import com.galaxyairpods.data.BleAirPodsRepository
 import com.galaxyairpods.data.bluetooth.AirPodsBleScanner
+import com.galaxyairpods.data.bluetooth.AirPodsScannerHub
+import com.galaxyairpods.data.bluetooth.AirPodsScannerLease
 import com.galaxyairpods.data.persistence.AirPodsDataStore
 import com.galaxyairpods.domain.model.AirPodsState
 import com.galaxyairpods.widget.AirPodsWidget
@@ -34,18 +36,20 @@ class AirPodsMonitorService : Service() {
     private lateinit var dataStore: AirPodsDataStore
     private lateinit var repository: BleAirPodsRepository
     private lateinit var scanner: AirPodsBleScanner
+    private lateinit var scannerLease: AirPodsScannerLease
 
     override fun onCreate() {
         super.onCreate()
         dataStore = AirPodsDataStore(this)
         repository = BleAirPodsRepository(dataStore)
-        scanner = AirPodsBleScanner(this)
+        scannerLease = AirPodsScannerHub.acquire(this)
+        scanner = scannerLease.scanner
 
         createNotificationChannel()
         startForegroundCompat(buildNotification(AirPodsState.empty()))
         observePackets()
         observeBluetoothConnections()
-        scanner.start(android.bluetooth.le.ScanSettings.SCAN_MODE_LOW_POWER)
+        scannerLease.start(android.bluetooth.le.ScanSettings.SCAN_MODE_LOW_LATENCY)
     }
 
     private fun observePackets() {
@@ -174,7 +178,7 @@ class AirPodsMonitorService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
 
     override fun onDestroy() {
-        scanner.stop()
+        scannerLease.close()
         serviceScope.cancel()
         super.onDestroy()
     }

@@ -7,6 +7,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.galaxyairpods.data.BleAirPodsRepository
 import com.galaxyairpods.data.bluetooth.AirPodsBleScanner
+import com.galaxyairpods.data.bluetooth.AirPodsScannerHub
 import com.galaxyairpods.data.persistence.AirPodsDataStore
 import com.galaxyairpods.domain.model.AirPodsModel
 import com.galaxyairpods.domain.model.AirPodsState
@@ -33,7 +34,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val liveRepository = BleAirPodsRepository(dataStore)
     private val updateManager = UpdateManager(application)
 
-    val scanner = AirPodsBleScanner(application)
+    private val scannerLease = AirPodsScannerHub.acquire(application)
+    val scanner: AirPodsBleScanner = scannerLease.scanner
     val scanStatus: StateFlow<String> = scanner.status
     val popupController = PopupMotionController()
     val popupState: StateFlow<com.galaxyairpods.domain.model.PopupUiState> = popupController.state
@@ -146,11 +148,9 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startScanning() {
-        scanner.start()
+        scannerLease.start()
         if (backgroundDetection.value) startBackgroundServiceIfReady()
     }
-
-    fun stopScanning() = scanner.stop()
 
     fun setAutoPopup(enabled: Boolean) {
         viewModelScope.launch { dataStore.setAutoPopup(enabled) }
@@ -241,7 +241,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     override fun onCleared() {
-        scanner.stop()
+        scannerLease.close()
         super.onCleared()
     }
 }

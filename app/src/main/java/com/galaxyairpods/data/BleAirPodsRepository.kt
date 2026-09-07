@@ -6,6 +6,7 @@ import com.galaxyairpods.domain.model.AirPodsModel
 import com.galaxyairpods.domain.model.AirPodsState
 import com.galaxyairpods.domain.model.DataConfidence
 import com.galaxyairpods.domain.model.ParsedAirPodsPacket
+import com.galaxyairpods.domain.model.isCompatibleWith
 import com.galaxyairpods.domain.repository.AirPodsRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -20,10 +21,17 @@ class BleAirPodsRepository(
 
     override suspend fun applyParsedPacket(deviceId: String, packet: ParsedAirPodsPacket, seenAt: Long) {
         val current = _state.value
-        val sameDevice = current.deviceId == deviceId
+        val sameDevice = sameLogicalAirPods(current, deviceId, packet.model)
+        val model = if (sameDevice && packet.model == AirPodsModel.AIRPODS &&
+            current.model != AirPodsModel.UNKNOWN && current.model != AirPodsModel.AIRPODS
+        ) {
+            current.model
+        } else {
+            packet.model
+        }
         val newState = AirPodsState(
-            deviceId = deviceId,
-            model = packet.model,
+            deviceId = if (sameDevice) current.deviceId ?: deviceId else deviceId,
+            model = model,
             leftBattery = packet.leftBattery,
             rightBattery = packet.rightBattery,
             caseBattery = packet.caseBattery,
@@ -45,12 +53,16 @@ class BleAirPodsRepository(
 
     suspend fun applyBluetoothConnection(event: BluetoothAirPodsEvent) {
         val current = _state.value
-        val sameDevice = current.deviceId == event.deviceId
+        val sameDevice = sameLogicalAirPods(current, event.deviceId, event.model)
         val newState = if (sameDevice) {
             current.copy(
-                model = if (current.model == AirPodsModel.UNKNOWN ||
-                    current.model == AirPodsModel.AIRPODS
-                ) event.model else current.model,
+                deviceId = current.deviceId ?: event.deviceId,
+                model = when {
+                    current.model == AirPodsModel.UNKNOWN || current.model == AirPodsModel.AIRPODS -> event.model
+                    event.model == AirPodsModel.UNKNOWN || event.model == AirPodsModel.AIRPODS -> current.model
+                    current.hasAnyBattery && current.model.isCompatibleWith(event.model) -> current.model
+                    else -> event.model
+                },
                 connected = event.connected,
                 detected = true,
                 deviceName = event.deviceName,
@@ -72,3 +84,10 @@ class BleAirPodsRepository(
         dataStore.saveState(newState)
     }
 }
+
+internal fun sameLogicalAirPods(
+    current: AirPodsState,
+    incomingDeviceId: String,
+    incomingModel: AirPodsModel,
+): Boolean = current.deviceId == incomingDeviceId ||
+    (current.detected && current.model.isCompatibleWith(incomingModel))

@@ -7,6 +7,7 @@ import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
@@ -56,6 +57,7 @@ class AirPodsBleScanner(private val context: Context) {
 
     private val parserRegistry = AirPodsParserRegistry()
     private val monitorScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    @Volatile
     private var scanning = false
     private var connectionMonitorJob: Job? = null
     private var lastBluetoothEvent: BluetoothAirPodsEvent? = null
@@ -95,10 +97,18 @@ class AirPodsBleScanner(private val context: Context) {
 
         override fun onScanFailed(errorCode: Int) {
             scanning = false
+            if (!unfilteredFallbackUsed && hasScanPermission()) {
+                unfilteredFallbackUsed = true
+                val bluetoothScanner = runCatching { adapter?.bluetoothLeScanner }.getOrNull()
+                if (bluetoothScanner != null && startBleScan(bluetoothScanner, requestedScanMode, filtered = false)) {
+                    return
+                }
+            }
             _status.value = "스캔 실패: error $errorCode"
         }
     }
 
+    @Synchronized
     fun start(scanMode: Int = ScanSettings.SCAN_MODE_LOW_LATENCY) {
         if (!hasConnectPermission()) {
             _status.value = "Bluetooth/Nearby devices 권한이 필요합니다"
@@ -127,15 +137,10 @@ class AirPodsBleScanner(private val context: Context) {
                 _status.value = "BLE 스캐너를 사용할 수 없어 Bluetooth 연결만 확인합니다"
                 return
             }
-            scanner.startScan(
-                null,
-                ScanSettings.Builder()
-                    .setScanMode(scanMode)
-                    .build(),
-                callback,
-            )
-            scanning = true
-            _status.value = "AirPods 연결 상태 확인 중"
+            requestedScanMode = scanMode
+            unfilteredFallbackUsed = false
+            if (startBleScan(scanner, scanMode, filtered = true)) return
+            _status.value = "Bluetooth 스캔을 시작하지 못했습니다"
         } catch (_: SecurityException) {
             _status.value = "Bluetooth scan 권한이 없어 시작하지 못했습니다"
         } catch (_: IllegalStateException) {
@@ -143,6 +148,7 @@ class AirPodsBleScanner(private val context: Context) {
         }
     }
 
+    @Synchronized
     fun stop() {
         if (scanning && hasScanPermission()) {
             try {
@@ -155,8 +161,43 @@ class AirPodsBleScanner(private val context: Context) {
         connectionMonitorJob?.cancel()
         connectionMonitorJob = null
         lastBluetoothEvent = null
+        unfilteredFallbackUsed = false
         closeProfileProxies()
         _status.value = "검색 중지"
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startBleScan(
+        scanner: android.bluetooth.le.BluetoothLeScanner,
+        scanMode: Int,
+        filtered: Boolean,
+    ): Boolean = try {
+        scanner.startScan(
+            if (filtered) AIRPODS_SCAN_FILTERS else null,
+            ScanSettings.Builder()
+                .setScanMode(scanMode)
+                .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
+                .setMatchMode(
+                    if (scanMode == ScanSettings.SCAN_MODE_LOW_LATENCY) {
+                        ScanSettings.MATCH_MODE_AGGRESSIVE
+                    } else {
+                        ScanSettings.MATCH_MODE_STICKY
+                    },
+                )
+                .setNumOfMatches(ScanSettings.MATCH_NUM_MAX_ADVERTISEMENT)
+                .setReportDelay(0L)
+                .build(),
+            callback,
+        )
+        scanning = true
+        _status.value = "AirPods 신호 검색 중"
+        true
+    } catch (_: SecurityException) {
+        false
+    } catch (_: IllegalArgumentException) {
+        false
+    } catch (_: IllegalStateException) {
+        false
     }
 
     private fun append(result: ScanResult) {
@@ -313,6 +354,15 @@ class AirPodsBleScanner(private val context: Context) {
         }
 
     companion object {
+        private val AIRPODS_SCAN_FILTERS = listOf(
+            ScanFilter.Builder()
+                .setManufacturerData(
+                    AppleAirPodsParser.APPLE_COMPANY_ID,
+                    byteArrayOf(0x07, 0x19),
+                    byteArrayOf(0xFF.toByte(), 0xFF.toByte()),
+                )
+                .build(),
+        )
         private const val CONNECTION_POLL_MS = 1_500L
         private const val EVENT_REFRESH_MS = 30_000L
         private val PROFILE_PROXY_IDS = buildList {
@@ -321,6 +371,12 @@ class AirPodsBleScanner(private val context: Context) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) add(BluetoothProfile.LE_AUDIO)
         }
     }
+
+    @Volatile
+    private var requestedScanMode: Int = ScanSettings.SCAN_MODE_LOW_LATENCY
+
+    @Volatile
+    private var unfilteredFallbackUsed = false
 
     @SuppressLint("MissingPermission")
     private fun closeProfileProxies() {
