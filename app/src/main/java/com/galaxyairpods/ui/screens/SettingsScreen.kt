@@ -95,7 +95,7 @@ fun SettingsScreen(
                     if (PermissionManager.allGranted(context, PermissionManager.runtimePermissions())) {
                         "허용됨"
                     } else {
-                        "Bluetooth와 알림 권한이 필요합니다"
+                        "Bluetooth·위치·알림 권한이 필요합니다"
                     },
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

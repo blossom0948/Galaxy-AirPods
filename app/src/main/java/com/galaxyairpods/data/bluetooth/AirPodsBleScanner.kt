@@ -20,6 +20,7 @@ import android.os.Build
 import androidx.core.content.ContextCompat
 import com.galaxyairpods.domain.model.AirPodsModel
 import com.galaxyairpods.domain.model.ParsedAirPodsPacket
+import com.galaxyairpods.data.persistence.AirPodsDataStore
 import com.galaxyairpods.service.AirPodsSystemReceiver
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -61,6 +62,7 @@ class AirPodsBleScanner(private val context: Context) {
     val bluetoothEvents: SharedFlow<BluetoothAirPodsEvent> = _bluetoothEvents.asSharedFlow()
 
     private val parserRegistry = AirPodsParserRegistry()
+    private val dataStore = AirPodsDataStore(context.applicationContext)
     private val monitorScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     @Volatile
     private var scanning = false
@@ -75,9 +77,11 @@ class AirPodsBleScanner(private val context: Context) {
     private var legacyScanFallbackJob: Job? = null
     private var legacyScanning = false
     private var directScanIsFiltered = false
+    private val systemBatterySamples = mutableMapOf<String, BatterySample>()
     @Volatile
     private var lastValidatedAt = 0L
     private val classicBatteryReceiver = AirPodsSystemReceiver()
+    private val classicBatteryVendorReceiver = AirPodsSystemReceiver()
     private val profileProxies = mutableMapOf<Int, BluetoothProfile>()
     private val bluetoothManager: BluetoothManager? by lazy {
         context.getSystemService(BluetoothManager::class.java)
@@ -204,6 +208,7 @@ class AirPodsBleScanner(private val context: Context) {
         connectionMonitorJob?.cancel()
         connectionMonitorJob = null
         lastBluetoothEvent = null
+        systemBatterySamples.clear()
         unregisterClassicBatteryReceiver()
         closeProfileProxies()
         _status.value = "검색 중지"
@@ -334,28 +339,41 @@ class AirPodsBleScanner(private val context: Context) {
     private fun registerClassicBatteryReceiver() {
         if (classicBatteryReceiverRegistered) return
 
-        val filter = IntentFilter().apply {
+        val systemFilter = IntentFilter().apply {
             addAction(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED)
-            addAction(BluetoothHeadset.ACTION_VENDOR_SPECIFIC_HEADSET_EVENT)
             addAction(AirPodsSystemReceiver.BATTERY_LEVEL_CHANGED_ACTION)
+        }
+        val vendorFilter = IntentFilter().apply {
+            addAction(BluetoothHeadset.ACTION_VENDOR_SPECIFIC_HEADSET_EVENT)
+            addCategory(APPLE_HFP_EVENT_CATEGORY)
         }
         runCatching {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 context.registerReceiver(
                     classicBatteryReceiver,
-                    filter,
+                    systemFilter,
+                    Context.RECEIVER_EXPORTED,
+                )
+                context.registerReceiver(
+                    classicBatteryVendorReceiver,
+                    vendorFilter,
                     Context.RECEIVER_EXPORTED,
                 )
             } else {
-                context.registerReceiver(classicBatteryReceiver, filter)
+                context.registerReceiver(classicBatteryReceiver, systemFilter)
+                context.registerReceiver(classicBatteryVendorReceiver, vendorFilter)
             }
             classicBatteryReceiverRegistered = true
+        }.onFailure {
+            runCatching { context.unregisterReceiver(classicBatteryReceiver) }
+            runCatching { context.unregisterReceiver(classicBatteryVendorReceiver) }
         }
     }
 
     private fun unregisterClassicBatteryReceiver() {
         if (!classicBatteryReceiverRegistered) return
         runCatching { context.unregisterReceiver(classicBatteryReceiver) }
+        runCatching { context.unregisterReceiver(classicBatteryVendorReceiver) }
         classicBatteryReceiverRegistered = false
     }
 
@@ -497,6 +515,14 @@ class AirPodsBleScanner(private val context: Context) {
         }
         lastBluetoothEvent = current
 
+        if (current.connected) {
+            connectedDevices[current.deviceId]?.let { device ->
+                BluetoothBatteryReader.read(device)?.let { battery ->
+                    persistSystemBattery(current, battery)
+                }
+            }
+        }
+
         _status.value = if (current.connected) {
             "AirPods Bluetooth 연결됨"
         } else {
@@ -543,6 +569,24 @@ class AirPodsBleScanner(private val context: Context) {
         return AirPodsModel.fromBluetoothName(name)
     }
 
+    private fun persistSystemBattery(event: BluetoothAirPodsEvent, battery: Int) {
+        val now = System.currentTimeMillis()
+        val previous = systemBatterySamples[event.deviceId]
+        if (previous != null && previous.battery == battery &&
+            now - previous.seenAt < SYSTEM_BATTERY_REFRESH_MS
+        ) return
+
+        systemBatterySamples[event.deviceId] = BatterySample(battery, now)
+        monitorScope.launch(Dispatchers.IO) {
+            dataStore.applyClassicBatteryLevel(
+                deviceId = event.deviceId,
+                deviceName = event.deviceName,
+                model = event.model,
+                battery = battery,
+            )
+        }
+    }
+
     private fun hasConnectPermission(): Boolean =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) ==
@@ -555,7 +599,9 @@ class AirPodsBleScanner(private val context: Context) {
     private fun hasScanPermission(): Boolean =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
-                ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+                ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED &&
+                ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED &&
+                ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
         } else {
             ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ==
                 PackageManager.PERMISSION_GRANTED
@@ -576,12 +622,20 @@ class AirPodsBleScanner(private val context: Context) {
         private const val LEGACY_SCAN_FALLBACK_DELAY_MS = 12_000L
         private const val CONNECTION_POLL_MS = 1_500L
         private const val EVENT_REFRESH_MS = 30_000L
+        private const val SYSTEM_BATTERY_REFRESH_MS = 30_000L
+        private const val APPLE_HFP_EVENT_CATEGORY =
+            "${BluetoothHeadset.VENDOR_SPECIFIC_HEADSET_EVENT_COMPANY_ID_CATEGORY}.76"
         private val PROFILE_PROXY_IDS = buildList {
             add(BluetoothProfile.A2DP)
             add(BluetoothProfile.HEADSET)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) add(BluetoothProfile.LE_AUDIO)
         }
     }
+
+    private data class BatterySample(
+        val battery: Int,
+        val seenAt: Long,
+    )
 
     @SuppressLint("MissingPermission")
     private fun closeProfileProxies() {

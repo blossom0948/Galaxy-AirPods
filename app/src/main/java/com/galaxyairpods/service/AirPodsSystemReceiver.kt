@@ -12,6 +12,7 @@ import android.content.Intent
 import android.os.Build
 import androidx.core.content.ContextCompat
 import com.galaxyairpods.data.bluetooth.parseIphoneAccessoryBattery
+import com.galaxyairpods.data.bluetooth.BluetoothBatteryReader
 import com.galaxyairpods.data.persistence.AirPodsDataStore
 import com.galaxyairpods.domain.model.AirPodsModel
 import kotlinx.coroutines.CoroutineScope
@@ -33,6 +34,16 @@ class AirPodsSystemReceiver : BroadcastReceiver() {
             BATTERY_LEVEL_CHANGED_ACTION -> {
                 handleSystemBatteryEvent(context, intent)
                 return
+            }
+
+            BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED -> {
+                if (intent.getIntExtra(
+                        BluetoothHeadset.EXTRA_STATE,
+                        BluetoothHeadset.STATE_DISCONNECTED,
+                    ) == BluetoothHeadset.STATE_CONNECTED
+                ) {
+                    persistCachedBattery(context, intent)
+                }
             }
 
             in START_ACTIONS -> Unit
@@ -68,7 +79,7 @@ class AirPodsSystemReceiver : BroadcastReceiver() {
         if (!name.looksLikeAirPods()) return
         val battery = parseIphoneAccessoryBattery(
             intent.extras?.get(BluetoothHeadset.EXTRA_VENDOR_SPECIFIC_HEADSET_EVENT_ARGS),
-        ) ?: return
+        ) ?: BluetoothBatteryReader.read(device) ?: return
         persistClassicBattery(context, device, name, battery)
     }
 
@@ -76,9 +87,20 @@ class AirPodsSystemReceiver : BroadcastReceiver() {
         val device = intent.airPodsDevice(context) ?: return
         val name = device.airPodsName()
         if (!name.looksLikeAirPods()) return
-        val battery = intent.getIntExtra(BATTERY_LEVEL_EXTRA, -1)
-        if (battery !in 0..100) return
+        val broadcastBattery = intent.getIntExtra(BATTERY_LEVEL_EXTRA, -1)
+        val battery = broadcastBattery.takeIf { it in 0..100 }
+            ?: BluetoothBatteryReader.read(device)
+            ?: return
         persistClassicBattery(context, device, name, battery)
+    }
+
+    private fun persistCachedBattery(context: Context, intent: Intent) {
+        val device = intent.airPodsDevice(context) ?: return
+        val name = device.airPodsName()
+        if (!name.looksLikeAirPods()) return
+        BluetoothBatteryReader.read(device)?.let { battery ->
+            persistClassicBattery(context, device, name, battery)
+        }
     }
 
     private fun persistClassicBattery(

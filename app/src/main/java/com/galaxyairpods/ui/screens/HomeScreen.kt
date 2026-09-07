@@ -89,7 +89,7 @@ fun HomeScreen(
                     Text("권한 필요", style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "주변 기기와 알림 권한을 허용해야 AirPods를 감지합니다.",
+                        "주변 기기·위치·알림 권한을 허용해야 AirPods를 감지합니다.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
