@@ -18,13 +18,18 @@ import com.galaxyairpods.data.bluetooth.AirPodsScannerHub
 import com.galaxyairpods.data.bluetooth.AirPodsScannerLease
 import com.galaxyairpods.data.persistence.AirPodsDataStore
 import com.galaxyairpods.domain.model.AirPodsState
+import com.galaxyairpods.domain.model.mergeKnownValuesFrom
 import com.galaxyairpods.widget.AirPodsWidget
+import com.galaxyairpods.update.UpdateManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 
 /**
  * Keeps the BLE scanner alive after the activity is not visible.
@@ -39,6 +44,7 @@ class AirPodsMonitorService : Service() {
     private lateinit var repository: BleAirPodsRepository
     private lateinit var scanner: AirPodsBleScanner
     private lateinit var scannerLease: AirPodsScannerLease
+    private lateinit var updateManager: UpdateManager
 
     override fun onCreate() {
         super.onCreate()
@@ -46,12 +52,46 @@ class AirPodsMonitorService : Service() {
         repository = BleAirPodsRepository(dataStore)
         scannerLease = AirPodsScannerHub.acquire(this)
         scanner = scannerLease.scanner
+        updateManager = UpdateManager.shared(this)
 
         createNotificationChannel()
         startForegroundCompat(buildNotification(AirPodsState.empty()))
         observePackets()
         observeBluetoothConnections()
+        observePersistedBatteryFallback()
+        startAutomaticUpdateChecks()
         scannerLease.start(android.bluetooth.le.ScanSettings.SCAN_MODE_LOW_LATENCY)
+    }
+
+    private fun observePersistedBatteryFallback() {
+        serviceScope.launch {
+            dataStore.latestDisplayState.collect { stored ->
+                if (stored == null) return@collect
+                val live = repository.state.value
+                val displayState = if (live.deviceId == null) {
+                    stored
+                } else {
+                    live.mergeKnownValuesFrom(stored)
+                }
+                updateNotification(displayState)
+                AirPodsWidget.updateState(
+                    context = this@AirPodsMonitorService,
+                    left = displayState.leftBattery,
+                    right = displayState.rightBattery,
+                    caseBattery = displayState.caseBattery,
+                    modelLabel = displayState.model.label,
+                )
+            }
+        }
+    }
+
+    private fun startAutomaticUpdateChecks() {
+        serviceScope.launch {
+            while (isActive) {
+                updateManager.check(automatic = true)
+                delay(AUTO_UPDATE_INTERVAL_MS)
+            }
+        }
     }
 
     private fun observePackets() {
@@ -205,5 +245,6 @@ class AirPodsMonitorService : Service() {
     private companion object {
         const val CHANNEL_ID = "airpods_detection"
         const val NOTIFICATION_ID = 1001
+        const val AUTO_UPDATE_INTERVAL_MS = 30 * 60 * 1000L
     }
 }

@@ -63,6 +63,21 @@ class AirPodsAdvertisementParserTest {
     }
 
     @Test
+    fun decodesPairingModeBatteryAdvertisement() {
+        // 07 0E + prefix/model/address/unknown/right/left/case/color.
+        val packet = AppleAirPodsParser.parseManufacturerData(
+            "070e000e200000000000000005060400".hex(),
+        )
+
+        requireNotNull(packet)
+        assertEquals(AirPodsModel.AIRPODS_PRO, packet.model)
+        assertEquals(60, packet.leftBattery)
+        assertEquals(50, packet.rightBattery)
+        assertEquals(40, packet.caseBattery)
+        assertNull(packet.caseOpen)
+    }
+
+    @Test
     fun findsStatusMessageAfterOemManufacturerHeader() {
         val packet = AppleAirPodsParser.parseManufacturerData(
             "1bff4c000719010e2054aab5310000e00ca78a604bd37df4604f2c73e9a7f4".hex(),

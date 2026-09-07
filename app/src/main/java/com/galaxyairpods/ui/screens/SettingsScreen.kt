@@ -31,7 +31,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.galaxyairpods.domain.model.AirPodsModel
 import com.galaxyairpods.permissions.PermissionManager
-import com.galaxyairpods.update.UpdateInfo
 import com.galaxyairpods.update.UpdateState
 
 @Composable
@@ -52,7 +51,6 @@ fun SettingsScreen(
     onStartScanning: () -> Unit,
     updateState: UpdateState,
     onCheckForUpdates: () -> Unit,
-    onInstallUpdate: (UpdateInfo) -> Unit,
     onInstallReady: (UpdateState.Ready) -> Unit,
 ) {
     val context = LocalContext.current
@@ -69,7 +67,7 @@ fun SettingsScreen(
 
         ModelSelector(modelOverride, onModelOverrideChange)
 
-        UpdateCard(updateState, onCheckForUpdates, onInstallUpdate, onInstallReady)
+        UpdateCard(updateState, onCheckForUpdates, onInstallReady)
 
         SettingsToggle("자동 팝업", autoPopup, onAutoPopupChange)
         SettingsToggle("케이스를 열 때 표시", showOnCaseOpen, onCaseOpenChange)
@@ -132,36 +130,34 @@ fun SettingsScreen(
 private fun UpdateCard(
     state: UpdateState,
     onCheckForUpdates: () -> Unit,
-    onInstallUpdate: (UpdateInfo) -> Unit,
     onInstallReady: (UpdateState.Ready) -> Unit,
 ) {
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp)) {
             Text("업데이트", style = MaterialTheme.typography.titleMedium)
             when (state) {
-                UpdateState.Idle -> Text("업데이트 확인 전")
+                UpdateState.Idle -> Text("새 버전은 자동으로 확인됩니다")
                 UpdateState.Checking -> Text("최신 버전 확인 중…")
-                UpdateState.UpToDate -> Text("최신 버전입니다")
+                UpdateState.UpToDate -> Text("최신 버전입니다 · 새 배포는 자동으로 확인합니다")
                 is UpdateState.Available -> {
                     Text("새 버전 ${state.info.versionName} 사용 가능")
-                    Button(onClick = { onInstallUpdate(state.info) }) {
-                        Text("업데이트 다운로드")
-                    }
+                    Text("다운로드와 설치를 자동으로 시작합니다.")
                 }
                 is UpdateState.Downloading -> {
                     Text("다운로드 중 ${state.progress}%")
                 }
                 is UpdateState.Ready -> {
-                    Text("다운로드 완료")
+                    Text("다운로드 완료 · 설치를 자동으로 시작했습니다")
                     Text(
-                        "파일을 모두 받은 뒤 설치를 시작합니다.",
+                        "시스템 확인이 필요하면 알림을 눌러 설치를 마무리하세요.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Button(onClick = { onInstallReady(state) }) {
-                        Text("설치")
+                        Text("설치 다시 시도")
                     }
                 }
+                is UpdateState.Installing -> Text("업데이트 설치 중…")
                 is UpdateState.Error -> {
                     Text(state.message, color = MaterialTheme.colorScheme.error)
                     Button(onClick = onCheckForUpdates) { Text("다시 확인") }

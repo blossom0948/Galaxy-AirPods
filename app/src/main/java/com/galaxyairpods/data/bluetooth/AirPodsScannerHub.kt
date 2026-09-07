@@ -3,6 +3,7 @@ package com.galaxyairpods.data.bluetooth
 import android.annotation.SuppressLint
 import android.content.Context
 import android.bluetooth.le.ScanSettings
+import android.content.Intent
 
 /**
  * There must be one BLE scan per process on Samsung devices. The activity and
@@ -24,6 +25,13 @@ object AirPodsScannerHub {
         return AirPodsScannerLease(scanner) {
             release(owner, scanner)
         }
+    }
+
+    fun dispatchPendingScanIntent(context: Context, intent: Intent) {
+        val scanner = synchronized(lock) {
+            sharedScanner ?: AirPodsBleScanner(context.applicationContext).also { sharedScanner = it }
+        }
+        scanner.dispatchPendingScanIntent(intent)
     }
 
     private fun release(owner: Any, scanner: AirPodsBleScanner) {

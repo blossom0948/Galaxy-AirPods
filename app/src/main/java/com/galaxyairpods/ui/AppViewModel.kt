@@ -13,12 +13,12 @@ import com.galaxyairpods.data.persistence.AirPodsDataStore
 import com.galaxyairpods.domain.model.AirPodsModel
 import com.galaxyairpods.domain.model.AirPodsState
 import com.galaxyairpods.domain.model.PopupEvent
+import com.galaxyairpods.domain.model.mergeKnownValuesFrom
 import com.galaxyairpods.domain.motion.MotionLabSettings
 import com.galaxyairpods.domain.popup.PopupMotionController
 import com.galaxyairpods.permissions.PermissionManager
 import com.galaxyairpods.service.AirPodsMonitorService
 import com.galaxyairpods.service.AirPodsOverlayService
-import com.galaxyairpods.update.UpdateInfo
 import com.galaxyairpods.update.UpdateManager
 import com.galaxyairpods.update.UpdateState
 import com.galaxyairpods.widget.AirPodsWidget
@@ -28,12 +28,14 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val dataStore = AirPodsDataStore(application)
     private val liveRepository = BleAirPodsRepository(dataStore)
-    private val updateManager = UpdateManager(application)
+    private val updateManager = UpdateManager.shared(application)
 
     private val scannerLease = AirPodsScannerHub.acquire(application)
     val scanner: AirPodsBleScanner = scannerLease.scanner
@@ -47,7 +49,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         dataStore.latestState,
         dataStore.modelOverride,
     ) { live, stored, override ->
-        val source = if (live.deviceId != null) live else stored ?: AirPodsState.empty()
+        val source = if (live.deviceId != null) {
+            live.mergeKnownValuesFrom(stored)
+        } else {
+            stored ?: AirPodsState.empty()
+        }
         source.withResolvedConfidence().copy(model = override ?: source.model)
     }.stateIn(
         viewModelScope,
@@ -90,7 +96,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     val reducedMotion: StateFlow<Boolean> = _reducedMotion
 
     init {
-        checkForUpdates()
+        startAutomaticUpdateChecks()
         viewModelScope.launch {
             scanner.validatedPackets.collect { event ->
                 val previous = liveRepository.state.value
@@ -181,10 +187,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { updateManager.check() }
     }
 
-    fun installUpdate(info: UpdateInfo) {
-        viewModelScope.launch { updateManager.downloadAndInstall(info) }
-    }
-
     fun installReadyUpdate(ready: UpdateState.Ready) {
         updateManager.installReady(ready.file)
     }
@@ -239,6 +241,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun stopBackgroundService() {
         getApplication<Application>().stopService(Intent(getApplication(), AirPodsMonitorService::class.java))
+    }
+
+    private fun startAutomaticUpdateChecks() {
+        viewModelScope.launch {
+            while (isActive) {
+                updateManager.check(automatic = true)
+                delay(AUTO_UPDATE_INTERVAL_MS)
+            }
+        }
+    }
+
+    private companion object {
+        const val AUTO_UPDATE_INTERVAL_MS = 30 * 60 * 1000L
     }
 
     override fun onCleared() {

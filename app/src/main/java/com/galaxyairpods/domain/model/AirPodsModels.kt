@@ -150,6 +150,34 @@ enum class BatterySlot(val label: String) {
     CASE("Case"),
 }
 
+/** Keeps persisted fallback battery values visible while a live profile event
+ * is still being merged in. Live non-null fields always win. */
+fun AirPodsState.mergeKnownValuesFrom(fallback: AirPodsState?): AirPodsState {
+    if (fallback == null) return this
+    val sameDevice = deviceId == null || fallback.deviceId == null ||
+        deviceId == fallback.deviceId || model.isCompatibleWith(fallback.model)
+    if (!sameDevice) return this
+
+    return copy(
+        model = when {
+            model == AirPodsModel.UNKNOWN || model == AirPodsModel.AIRPODS -> fallback.model
+            else -> model
+        },
+        leftBattery = leftBattery ?: fallback.leftBattery,
+        rightBattery = rightBattery ?: fallback.rightBattery,
+        caseBattery = caseBattery ?: fallback.caseBattery,
+        leftCharging = leftCharging ?: fallback.leftCharging,
+        rightCharging = rightCharging ?: fallback.rightCharging,
+        caseCharging = caseCharging ?: fallback.caseCharging,
+        leftInCase = leftInCase ?: fallback.leftInCase,
+        rightInCase = rightInCase ?: fallback.rightInCase,
+        caseOpen = caseOpen ?: fallback.caseOpen,
+        detected = detected || fallback.detected,
+        deviceName = deviceName ?: fallback.deviceName,
+        lastSeenAt = maxOf(lastSeenAt ?: 0L, fallback.lastSeenAt ?: 0L).takeIf { it > 0L },
+    )
+}
+
 data class ParsedAirPodsPacket(
     val model: AirPodsModel,
     val leftBattery: Int?,

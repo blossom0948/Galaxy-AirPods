@@ -22,6 +22,8 @@ import kotlinx.coroutines.flow.map
 private val Context.airPodsPreferences by preferencesDataStore(name = "airpods_state")
 
 class AirPodsDataStore(private val context: Context) {
+    enum class BatterySource { BLE, CLASSIC }
+
     private object Keys {
         val deviceId = stringPreferencesKey("device_id")
         val model = stringPreferencesKey("model")
@@ -40,6 +42,8 @@ class AirPodsDataStore(private val context: Context) {
         val deviceName = stringPreferencesKey("device_name")
         val lastSeenAt = longPreferencesKey("last_seen_at")
         val confidence = stringPreferencesKey("confidence")
+        val batterySource = stringPreferencesKey("battery_source")
+        val batteryUpdatedAt = longPreferencesKey("battery_updated_at")
         val autoPopup = booleanPreferencesKey("auto_popup")
         val showOnCaseOpen = booleanPreferencesKey("show_on_case_open")
         val backgroundDetection = booleanPreferencesKey("background_detection")
@@ -105,7 +109,7 @@ class AirPodsDataStore(private val context: Context) {
         state?.copy(model = override ?: state.model)
     }
 
-    suspend fun saveState(state: AirPodsState) {
+    suspend fun saveState(state: AirPodsState, batterySource: BatterySource? = null) {
         context.airPodsPreferences.edit { preferences ->
             val storedModel = preferences[Keys.model]?.let { value ->
                 AirPodsModel.entries.firstOrNull { it.name == value }
@@ -128,7 +132,61 @@ class AirPodsDataStore(private val context: Context) {
             preferences.putNullablePreserving(Keys.deviceName, state.deviceName, preserveKnownFields)
             preferences.putNullable(Keys.lastSeenAt, state.lastSeenAt)
             preferences[Keys.confidence] = state.confidence.name
+            if (batterySource != null && state.hasAnyBattery) {
+                preferences[Keys.batterySource] = batterySource.name
+                preferences[Keys.batteryUpdatedAt] = state.lastSeenAt ?: System.currentTimeMillis()
+            }
         }
+    }
+
+    /**
+     * Classic Bluetooth fallback used by some AirPods/compatible firmware.
+     * A recent BLE packet remains authoritative whenever it is available.
+     */
+    suspend fun applyClassicBatteryLevel(
+        deviceId: String,
+        deviceName: String,
+        model: AirPodsModel,
+        battery: Int,
+    ) {
+        if (battery !in 0..100) return
+        val now = System.currentTimeMillis()
+        context.airPodsPreferences.edit { preferences ->
+            val storedModel = preferences[Keys.model]?.let { value ->
+                AirPodsModel.entries.firstOrNull { it.name == value }
+            }
+            val storedDeviceId = preferences[Keys.deviceId]
+            val sameDevice = storedDeviceId == null ||
+                storedDeviceId == deviceId ||
+                (storedModel != null && storedModel.isCompatibleWith(model))
+            if (!sameDevice) return@edit
+
+            val source = preferences[Keys.batterySource]
+            val lastBleBatteryAt = preferences[Keys.batteryUpdatedAt] ?: 0L
+            val recentBlePacket = source == BatterySource.BLE.name &&
+                now - lastBleBatteryAt <= BLE_FALLBACK_WINDOW_MS
+            if (recentBlePacket) return@edit
+
+            preferences[Keys.deviceId] = storedDeviceId ?: deviceId
+            preferences[Keys.model] = when {
+                storedModel == null || storedModel == AirPodsModel.UNKNOWN -> model.name
+                storedModel == AirPodsModel.AIRPODS && model != AirPodsModel.AIRPODS -> model.name
+                else -> storedModel.name
+            }
+            preferences[Keys.leftBattery] = battery
+            preferences[Keys.rightBattery] = battery
+            preferences[Keys.connected] = true
+            preferences[Keys.detected] = true
+            preferences[Keys.deviceName] = deviceName
+            preferences[Keys.lastSeenAt] = now
+            preferences[Keys.confidence] = DataConfidence.LIVE.name
+            preferences[Keys.batterySource] = BatterySource.CLASSIC.name
+            preferences[Keys.batteryUpdatedAt] = now
+        }
+    }
+
+    companion object {
+        private const val BLE_FALLBACK_WINDOW_MS = 2 * 60 * 1000L
     }
 
     suspend fun setAutoPopup(enabled: Boolean) {

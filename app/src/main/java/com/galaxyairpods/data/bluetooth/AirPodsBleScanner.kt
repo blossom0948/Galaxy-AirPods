@@ -2,14 +2,17 @@ package com.galaxyairpods.data.bluetooth
 
 import android.Manifest
 import android.annotation.SuppressLint
+import android.app.PendingIntent
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanFilter
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.content.ContextCompat
@@ -48,7 +51,7 @@ class AirPodsBleScanner(private val context: Context) {
     private val _status = MutableStateFlow("스캔 대기")
     val status: StateFlow<String> = _status.asStateFlow()
 
-    private val _validatedPackets = MutableSharedFlow<ValidatedPacketEvent>(extraBufferCapacity = 16)
+    private val _validatedPackets = MutableSharedFlow<ValidatedPacketEvent>(replay = 1, extraBufferCapacity = 16)
     val validatedPackets: SharedFlow<ValidatedPacketEvent> = _validatedPackets.asSharedFlow()
 
     private val _bluetoothEvents = MutableSharedFlow<BluetoothAirPodsEvent>(replay = 1, extraBufferCapacity = 8)
@@ -61,6 +64,9 @@ class AirPodsBleScanner(private val context: Context) {
     private var connectionMonitorJob: Job? = null
     private var lastBluetoothEvent: BluetoothAirPodsEvent? = null
     private var profileProxiesRequested = false
+    private var pendingScanIntent: PendingIntent? = null
+    @Volatile
+    private var pendingScanActive = false
     private val profileProxies = mutableMapOf<Int, BluetoothProfile>()
     private val bluetoothManager: BluetoothManager? by lazy {
         context.getSystemService(BluetoothManager::class.java)
@@ -129,7 +135,10 @@ class AirPodsBleScanner(private val context: Context) {
                 _status.value = "BLE 스캐너를 사용할 수 없어 Bluetooth 연결만 확인합니다"
                 return
             }
-            if (startBleScan(scanner, scanMode)) return
+            if (startBleScan(scanner, scanMode)) {
+                startPendingIntentScan(scanner, scanMode)
+                return
+            }
             _status.value = "Bluetooth 스캔을 시작하지 못했습니다"
         } catch (_: SecurityException) {
             _status.value = "Bluetooth scan 권한이 없어 시작하지 못했습니다"
@@ -143,11 +152,16 @@ class AirPodsBleScanner(private val context: Context) {
         if (scanning && hasScanPermission()) {
             try {
                 adapter?.bluetoothLeScanner?.stopScan(callback)
+                if (pendingScanActive) {
+                    pendingScanIntent?.let { adapter?.bluetoothLeScanner?.stopScan(it) }
+                }
             } catch (_: SecurityException) {
                 _status.value = "권한이 없어 BLE 검색을 중지하지 못했습니다"
             }
         }
         scanning = false
+        pendingScanActive = false
+        pendingScanIntent = null
         connectionMonitorJob?.cancel()
         connectionMonitorJob = null
         lastBluetoothEvent = null
@@ -201,6 +215,67 @@ class AirPodsBleScanner(private val context: Context) {
         } catch (_: IllegalStateException) {
             false
         }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun startPendingIntentScan(
+        scanner: android.bluetooth.le.BluetoothLeScanner,
+        scanMode: Int,
+    ) {
+        if (pendingScanActive || Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+
+        val intent = Intent(context, AirPodsScanReceiver::class.java)
+            .setAction(AirPodsScanReceiver.ACTION_SCAN_RESULT)
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                PendingIntent.FLAG_MUTABLE
+            } else {
+                0
+            }
+        val pendingIntent = PendingIntent.getBroadcast(
+            context,
+            PENDING_SCAN_REQUEST_CODE,
+            intent,
+            flags,
+        )
+        val filters = listOf(
+            // Match the protocol byte only: pairing mode is 0x0E and paired
+            // mode is 0x19, so filtering on the old length drops valid cases.
+            ScanFilter.Builder()
+                .setManufacturerData(
+                    AppleAirPodsParser.APPLE_COMPANY_ID,
+                    byteArrayOf(0x07),
+                    byteArrayOf(0xFF.toByte()),
+                )
+                .build(),
+        )
+        val settings = ScanSettings.Builder()
+            .setScanMode(scanMode)
+            .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
+            .setReportDelay(0L)
+            .build()
+
+        runCatching {
+            scanner.startScan(filters, settings, pendingIntent)
+            pendingScanIntent = pendingIntent
+            pendingScanActive = true
+        }
+    }
+
+    /** Called by [AirPodsScanReceiver] for a PendingIntent-delivered result. */
+    internal fun dispatchPendingScanIntent(intent: Intent) {
+        val results = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableArrayListExtra(
+                android.bluetooth.le.BluetoothLeScanner.EXTRA_LIST_SCAN_RESULT,
+                ScanResult::class.java,
+            ).orEmpty()
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableArrayListExtra<ScanResult>(
+                android.bluetooth.le.BluetoothLeScanner.EXTRA_LIST_SCAN_RESULT,
+            ).orEmpty()
+        }
+        results.forEach(::append)
     }
 
     private fun append(result: ScanResult) {
@@ -357,6 +432,7 @@ class AirPodsBleScanner(private val context: Context) {
         }
 
     companion object {
+        private const val PENDING_SCAN_REQUEST_CODE = 1002
         private const val CONNECTION_POLL_MS = 1_500L
         private const val EVENT_REFRESH_MS = 30_000L
         private val PROFILE_PROXY_IDS = buildList {

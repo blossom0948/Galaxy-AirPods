@@ -22,7 +22,11 @@ class BleAirPodsRepository(
     override suspend fun applyParsedPacket(deviceId: String, packet: ParsedAirPodsPacket, seenAt: Long) {
         val newState = mergeParsedState(_state.value, deviceId, packet, seenAt)
         _state.value = newState
-        dataStore.saveState(newState)
+        val hasBattery = packet.leftBattery != null || packet.rightBattery != null || packet.caseBattery != null
+        dataStore.saveState(
+            newState,
+            batterySource = AirPodsDataStore.BatterySource.BLE.takeIf { hasBattery },
+        )
     }
 
     suspend fun applyBluetoothConnection(event: BluetoothAirPodsEvent) {

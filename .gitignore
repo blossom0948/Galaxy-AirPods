@@ -12,6 +12,7 @@
 # Generated runtime diagnostics
 *.apk
 *.aab
+/dist/
 /diagnostics/
 
 # Local motion candidates

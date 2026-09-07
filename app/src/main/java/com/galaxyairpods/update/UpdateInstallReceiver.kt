@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
+import android.app.ActivityManager
 import android.os.Build
 import android.widget.Toast
 
@@ -20,6 +21,12 @@ class UpdateInstallReceiver : BroadcastReceiver() {
         )
         when (status) {
             PackageInstaller.STATUS_SUCCESS -> {
+                context.getSharedPreferences("update_state", Context.MODE_PRIVATE)
+                    .edit()
+                    .remove("attempted_version")
+                    .remove("blocked_version")
+                    .apply()
+                UpdateNotifications.cancel(context)
                 Toast.makeText(context, "AirPods Galaxy 업데이트가 완료되었습니다", Toast.LENGTH_LONG).show()
                 return
             }
@@ -27,6 +34,10 @@ class UpdateInstallReceiver : BroadcastReceiver() {
             PackageInstaller.STATUS_PENDING_USER_ACTION -> Unit
 
             else -> {
+                context.getSharedPreferences("update_state", Context.MODE_PRIVATE)
+                    .edit()
+                    .remove("attempted_version")
+                    .apply()
                 val message = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)
                     ?.takeIf { it.isNotBlank() }
                     ?: "설치를 완료하지 못했습니다"
@@ -46,7 +57,20 @@ class UpdateInstallReceiver : BroadcastReceiver() {
         } ?: return
 
         confirmationIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        context.startActivity(confirmationIntent)
+        if (isAppForeground(context)) {
+            runCatching { context.startActivity(confirmationIntent) }
+                .onFailure { UpdateNotifications.notifyConfirmation(context, confirmationIntent) }
+        } else {
+            UpdateNotifications.notifyConfirmation(context, confirmationIntent)
+        }
+    }
+
+    private fun isAppForeground(context: Context): Boolean {
+        val activityManager = context.getSystemService(ActivityManager::class.java) ?: return false
+        return activityManager.runningAppProcesses.orEmpty().any { process ->
+            process.processName == context.packageName &&
+                process.importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+        }
     }
 
     companion object {

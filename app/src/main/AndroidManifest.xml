@@ -62,8 +62,13 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
                 <action android:name="android.bluetooth.adapter.action.STATE_CHANGED" />
                 <action android:name="android.bluetooth.device.action.ACL_CONNECTED" />
+                <action android:name="android.bluetooth.headset.action.VENDOR_SPECIFIC_HEADSET_EVENT" />
+                <action android:name="android.bluetooth.device.action.BATTERY_LEVEL_CHANGED" />
             </intent-filter>
         </receiver>
+        <receiver
+            android:name=".data.bluetooth.AirPodsScanReceiver"
+            android:exported="false" />
         <receiver
             android:name=".update.UpdateInstallReceiver"
             android:exported="false" />

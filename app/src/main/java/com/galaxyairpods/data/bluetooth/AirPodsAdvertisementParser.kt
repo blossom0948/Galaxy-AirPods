@@ -18,11 +18,10 @@ interface AirPodsPacketParser {
  * Android exposes the Apple company identifier (0x004C) as the key of the
  * manufacturer-data map and the remaining bytes as the value. The value is a
  * Continuity message: [type, length, payload]. AirPods status broadcasts use
- * type 0x07. Current status broadcasts use the 0x01 payload prefix and a
- * 25-byte payload. Some older firmware uses 0x00 for the same 25-byte status
- * frame, so that form is accepted only when its model code is known. Other
- * 0x07 frames are emitted by Apple devices during connection/address
- * transitions, but do not contain the public battery fields at these offsets.
+ * type 0x07. Paired AirPods normally send a 0x01/25-byte frame, while the
+ * case's pairing advertisement is a separate 0x00/14-byte frame with the
+ * three battery bytes at different offsets. Both public formats are decoded;
+ * encrypted bytes are intentionally ignored.
  */
 class AppleAirPodsParser : AirPodsPacketParser {
     override val parserVersion: String = "apple-proximity-v1"
@@ -47,6 +46,8 @@ class AppleAirPodsParser : AirPodsPacketParser {
         private const val PLAINTEXT_STATUS_PREFIX = 0x01
         private const val LEGACY_STATUS_PREFIX = 0x00
         private const val AIRPODS_STATUS_LENGTH = 25
+        private const val PAIRING_MODE_PREFIX = 0x00
+        private const val PAIRING_MODE_LENGTH = 14
 
         private val MODEL_CODES = mapOf(
             0x0220 to AirPodsModel.AIRPODS_GEN1,
@@ -68,25 +69,60 @@ class AppleAirPodsParser : AirPodsPacketParser {
             val bytes = manufacturerData.withoutCompanyPrefix()
             // ScanRecord normally gives us only the manufacturer value, but
             // a few OEM Bluetooth stacks leave an AD/company header in it.
-            // Locate a complete 07/19 message instead of assuming offset 0.
+            // Locate a complete 07 message instead of assuming offset 0.
             for (cursor in 0 until (bytes.size - 1).coerceAtLeast(0)) {
-                if (bytes[cursor].u8() != PROXIMITY_MESSAGE_TYPE ||
-                    bytes[cursor + 1].u8() != AIRPODS_STATUS_LENGTH
-                ) continue
+                if (bytes[cursor].u8() != PROXIMITY_MESSAGE_TYPE) continue
 
+                val messageLength = bytes[cursor + 1].u8()
                 val payloadStart = cursor + 2
-                val payloadEnd = payloadStart + AIRPODS_STATUS_LENGTH
+                val payloadEnd = payloadStart + messageLength
                 if (payloadEnd > bytes.size) continue
 
-                val payload = bytes.copyOfRange(payloadStart, payloadEnd)
-                val prefix = payload[0].u8()
-                val modelCode = (payload[1].u8() shl 8) or payload[2].u8()
-                val legacyFrame = prefix == LEGACY_STATUS_PREFIX && MODEL_CODES.containsKey(modelCode)
-                if (prefix == PLAINTEXT_STATUS_PREFIX || legacyFrame) {
-                    return decodePayload(payload)
+                when (messageLength) {
+                    AIRPODS_STATUS_LENGTH -> {
+                        val payload = bytes.copyOfRange(payloadStart, payloadEnd)
+                        val prefix = payload[0].u8()
+                        val modelCode = (payload[1].u8() shl 8) or payload[2].u8()
+                        val legacyFrame = prefix == LEGACY_STATUS_PREFIX && MODEL_CODES.containsKey(modelCode)
+                        if (prefix == PLAINTEXT_STATUS_PREFIX || legacyFrame) {
+                            return decodePayload(payload)
+                        }
+                    }
+
+                    PAIRING_MODE_LENGTH -> {
+                        val payload = bytes.copyOfRange(payloadStart, payloadEnd)
+                        if (payload[0].u8() == PAIRING_MODE_PREFIX) {
+                            return decodePairingPayload(payload)
+                        }
+                    }
                 }
             }
             return null
+        }
+
+        /**
+         * Decodes Apple's unencrypted pairing advertisement. Its absolute
+         * bytes 0xC, 0xD and 0xE contain right, left and case battery levels.
+         */
+        private fun decodePairingPayload(payload: ByteArray): ParsedAirPodsPacket? {
+            if (payload.size < PAIRING_MODE_LENGTH) return null
+
+            val modelCode = (payload[1].u8() shl 8) or payload[2].u8()
+            val model = MODEL_CODES[modelCode] ?: return null
+            return ParsedAirPodsPacket(
+                model = model,
+                leftBattery = percentFromNibble(payload[11].u8()),
+                rightBattery = percentFromNibble(payload[10].u8()),
+                caseBattery = percentFromNibble(payload[12].u8()),
+                leftCharging = null,
+                rightCharging = null,
+                caseCharging = null,
+                leftInCase = null,
+                rightInCase = null,
+                caseOpen = null,
+                parserVersion = "apple-proximity-pairing-v1",
+                confidence = DataConfidence.LIVE,
+            )
         }
 
         private fun decodePayload(payload: ByteArray): ParsedAirPodsPacket? {

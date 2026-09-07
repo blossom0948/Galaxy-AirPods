@@ -1,7 +1,9 @@
 package com.galaxyairpods.domain
 
+import com.galaxyairpods.domain.model.AirPodsModel
 import com.galaxyairpods.domain.model.AirPodsState
 import com.galaxyairpods.domain.model.DataConfidence
+import com.galaxyairpods.domain.model.mergeKnownValuesFrom
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -24,5 +26,30 @@ class AirPodsStateTest {
         )
 
         assertEquals(DataConfidence.STALE, state.withResolvedConfidence(now).confidence)
+    }
+
+    @Test
+    fun liveProfileKeepsPersistedBatteryFallback() {
+        val live = AirPodsState(
+            deviceId = "classic-address",
+            model = AirPodsModel.AIRPODS_PRO,
+            rightBattery = 70,
+            connected = true,
+            detected = true,
+        )
+        val stored = AirPodsState(
+            deviceId = "ble-rotating-address",
+            model = AirPodsModel.AIRPODS_PRO,
+            leftBattery = 80,
+            caseBattery = 60,
+            detected = true,
+        )
+
+        val merged = live.mergeKnownValuesFrom(stored)
+
+        assertEquals(80, merged.leftBattery)
+        assertEquals(70, merged.rightBattery)
+        assertEquals(60, merged.caseBattery)
+        assertEquals(true, merged.connected)
     }
 }

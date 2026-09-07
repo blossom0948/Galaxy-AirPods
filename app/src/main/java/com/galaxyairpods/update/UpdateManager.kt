@@ -13,6 +13,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
@@ -27,6 +29,7 @@ sealed interface UpdateState {
     data class Available(val info: UpdateInfo) : UpdateState
     data class Downloading(val info: UpdateInfo, val progress: Int) : UpdateState
     data class Ready(val info: UpdateInfo, val file: File) : UpdateState
+    data class Installing(val info: UpdateInfo) : UpdateState
     data class Error(val message: String) : UpdateState
 }
 
@@ -37,55 +40,95 @@ data class UpdateInfo(
     val sha256: String?,
 )
 
-class UpdateManager(private val context: Context) {
+class UpdateManager(context: Context) {
+    private val context = context.applicationContext
     private val _state = MutableStateFlow<UpdateState>(UpdateState.Idle)
     val state: StateFlow<UpdateState> = _state.asStateFlow()
+    private val mutex = Mutex()
+    private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+    @Volatile
+    private var lastAutomaticCheckAt = 0L
 
-    suspend fun check() {
-        _state.value = UpdateState.Checking
-        runCatching {
-            withContext(Dispatchers.IO) {
-                val manifest = readText(MANIFEST_URL)
-                parseManifest(manifest)
+    suspend fun check(automatic: Boolean = false) {
+        if (automatic) {
+            val now = System.currentTimeMillis()
+            if (now - lastAutomaticCheckAt < AUTO_CHECK_INTERVAL_MS) return
+            lastAutomaticCheckAt = now
+        }
+
+        mutex.withLock {
+            if (context.packageManager.canRequestPackageInstalls()) {
+                preferences.edit().remove(BLOCKED_VERSION_KEY).apply()
             }
-        }.onSuccess { info ->
-            _state.value = if (info.versionCode > BuildConfig.VERSION_CODE) {
-                UpdateState.Available(info)
-            } else {
-                UpdateState.UpToDate
+
+            _state.value = UpdateState.Checking
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    val manifest = readText(manifestUrl())
+                    parseManifest(manifest)
+                }
+            }.onSuccess { info ->
+                if (info.versionCode <= BuildConfig.VERSION_CODE) {
+                    preferences.edit().remove(ATTEMPTED_VERSION_KEY).apply()
+                    _state.value = UpdateState.UpToDate
+                } else {
+                    _state.value = UpdateState.Available(info)
+                    val attempted = preferences.getInt(ATTEMPTED_VERSION_KEY, -1)
+                    val blocked = preferences.getInt(BLOCKED_VERSION_KEY, -1)
+                    if (automatic && attempted != info.versionCode && blocked != info.versionCode) {
+                        downloadAndInstallLocked(info)
+                    }
+                }
+            }.onFailure {
+                _state.value = UpdateState.Error("업데이트 확인 실패")
             }
-        }.onFailure {
-            _state.value = UpdateState.Error("업데이트 확인 실패")
         }
     }
 
     suspend fun downloadAndInstall(info: UpdateInfo) {
-        runCatching {
-            val file = withContext(Dispatchers.IO) {
-                val directory = File(context.cacheDir, "updates").apply { mkdirs() }
-                val target = File(directory, "AirPodsGalaxy-${info.versionCode}.apk")
-                download(info, target)
-                verifyApk(target, info)
-                target
+        mutex.withLock {
+            runCatching {
+                val file = downloadAndPrepare(info)
+                _state.value = UpdateState.Ready(info, file)
+            }.onFailure {
+                _state.value = UpdateState.Error("업데이트 파일을 받을 수 없습니다")
             }
+        }
+    }
+
+    fun installReady(file: File) {
+        val ready = _state.value as? UpdateState.Ready ?: return
+        runCatching { install(ready.info, file) }
+            .onFailure { _state.value = UpdateState.Error("업데이트 설치를 시작하지 못했습니다") }
+    }
+
+    private suspend fun downloadAndInstallLocked(info: UpdateInfo) {
+        runCatching {
+            val file = downloadAndPrepare(info)
             _state.value = UpdateState.Ready(info, file)
+            install(info, file)
         }.onFailure {
             _state.value = UpdateState.Error("업데이트 파일을 받을 수 없습니다")
         }
     }
 
-    fun installReady(file: File) {
-        runCatching { install(file) }
-            .onFailure { _state.value = UpdateState.Error("업데이트 설치를 시작하지 못했습니다") }
+    private suspend fun downloadAndPrepare(info: UpdateInfo): File = withContext(Dispatchers.IO) {
+        val directory = File(context.cacheDir, "updates").apply { mkdirs() }
+        val target = File(directory, "AirPodsGalaxy-${info.versionCode}.apk")
+        download(info, target)
+        verifyApk(target, info)
+        target
     }
 
-    private fun install(file: File) {
+    private fun install(info: UpdateInfo, file: File) {
         if (!context.packageManager.canRequestPackageInstalls()) {
             val settingsIntent = Intent(
                 Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                 Uri.parse("package:${context.packageName}"),
             ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            context.startActivity(settingsIntent)
+            preferences.edit().putInt(BLOCKED_VERSION_KEY, info.versionCode).apply()
+            runCatching { context.startActivity(settingsIntent) }
+                .onFailure { UpdateNotifications.notifyInstallPermission(context) }
             return
         }
 
@@ -96,7 +139,10 @@ class UpdateManager(private val context: Context) {
             setAppPackageName(context.packageName)
             setInstallReason(PackageManager.INSTALL_REASON_USER)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_REQUIRED)
+                // Ask Android to complete without a prompt when policy allows
+                // it. Ordinary APK installers may still receive
+                // STATUS_PENDING_USER_ACTION, which the receiver handles.
+                setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
             }
         }
         val sessionId = packageInstaller.createSession(params)
@@ -126,6 +172,11 @@ class UpdateManager(private val context: Context) {
                     pendingIntentFlags,
                 )
                 session.commit(statusIntent.intentSender)
+                preferences.edit()
+                    .putInt(ATTEMPTED_VERSION_KEY, info.versionCode)
+                    .remove(BLOCKED_VERSION_KEY)
+                    .apply()
+                _state.value = UpdateState.Installing(info)
             }
         } catch (error: Throwable) {
             runCatching { packageInstaller.abandonSession(sessionId) }
@@ -149,9 +200,11 @@ class UpdateManager(private val context: Context) {
 
         val total = connection.contentLengthLong
         var copied = 0L
+        val partial = File(target.parentFile, "${target.name}.part")
+        partial.delete()
         try {
             connection.inputStream.use { input ->
-                target.outputStream().use { output ->
+                partial.outputStream().use { output ->
                     val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
                     while (total <= 0L || copied < total) {
                         val count = input.read(buffer)
@@ -171,7 +224,11 @@ class UpdateManager(private val context: Context) {
             if (total > 0L && copied != total) {
                 error("APK 다운로드가 끝나기 전에 연결이 종료되었습니다")
             }
+            if (!partial.renameTo(target)) error("APK 파일을 저장하지 못했습니다")
             _state.value = UpdateState.Downloading(info, 100)
+        } catch (error: Throwable) {
+            partial.delete()
+            throw error
         } finally {
             connection.disconnect()
         }
@@ -219,6 +276,8 @@ class UpdateManager(private val context: Context) {
     private fun String.matchString(key: String): String? =
         Regex("""["]$key["]\s*:\s*["]([^"]+)["]""").find(this)?.groupValues?.getOrNull(1)
 
+    private fun manifestUrl(): String = "$MANIFEST_URL?cache=${System.currentTimeMillis() / MANIFEST_CACHE_BUCKET_MS}"
+
     private fun HttpURLConnection.useConnection(block: HttpURLConnection.() -> String): String {
         connectTimeout = 10_000
         readTimeout = 15_000
@@ -233,7 +292,19 @@ class UpdateManager(private val context: Context) {
     }
 
     companion object {
+        private const val PREFERENCES_NAME = "update_state"
+        private const val ATTEMPTED_VERSION_KEY = "attempted_version"
+        private const val BLOCKED_VERSION_KEY = "blocked_version"
+        private const val MANIFEST_CACHE_BUCKET_MS = 5 * 60 * 1000L
+        private const val AUTO_CHECK_INTERVAL_MS = 30 * 60 * 1000L
         private const val MANIFEST_URL =
             "https://raw.githubusercontent.com/blossom0948/Galaxy-AirPods/main/update.json"
+
+        @Volatile
+        private var shared: UpdateManager? = null
+
+        fun shared(context: Context): UpdateManager = synchronized(this) {
+            shared ?: UpdateManager(context.applicationContext).also { shared = it }
+        }
     }
 }
