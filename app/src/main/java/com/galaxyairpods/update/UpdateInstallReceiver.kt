@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageInstaller
 import android.os.Build
+import android.widget.Toast
 
 /**
  * Bridges PackageInstaller's asynchronous result back to the system installer.
@@ -17,7 +18,22 @@ class UpdateInstallReceiver : BroadcastReceiver() {
             PackageInstaller.EXTRA_STATUS,
             PackageInstaller.STATUS_FAILURE,
         )
-        if (status != PackageInstaller.STATUS_PENDING_USER_ACTION) return
+        when (status) {
+            PackageInstaller.STATUS_SUCCESS -> {
+                Toast.makeText(context, "AirPods Galaxy 업데이트가 완료되었습니다", Toast.LENGTH_LONG).show()
+                return
+            }
+
+            PackageInstaller.STATUS_PENDING_USER_ACTION -> Unit
+
+            else -> {
+                val message = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)
+                    ?.takeIf { it.isNotBlank() }
+                    ?: "설치를 완료하지 못했습니다"
+                Toast.makeText(context, "업데이트 실패: $message", Toast.LENGTH_LONG).show()
+                return
+            }
+        }
 
         val confirmationIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             intent.getParcelableExtra(

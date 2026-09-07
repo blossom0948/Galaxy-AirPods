@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
+import java.security.MessageDigest
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -33,6 +34,7 @@ data class UpdateInfo(
     val versionCode: Int,
     val versionName: String,
     val apkUrl: String,
+    val sha256: String?,
 )
 
 class UpdateManager(private val context: Context) {
@@ -63,12 +65,12 @@ class UpdateManager(private val context: Context) {
                 val directory = File(context.cacheDir, "updates").apply { mkdirs() }
                 val target = File(directory, "AirPodsGalaxy-${info.versionCode}.apk")
                 download(info, target)
+                verifyApk(target, info)
                 target
             }
             _state.value = UpdateState.Ready(info, file)
-            install(file)
         }.onFailure {
-            _state.value = UpdateState.Error("업데이트 다운로드 실패")
+            _state.value = UpdateState.Error("업데이트 파일을 받을 수 없습니다")
         }
     }
 
@@ -95,6 +97,9 @@ class UpdateManager(private val context: Context) {
         ).apply {
             setAppPackageName(context.packageName)
             setInstallReason(PackageManager.INSTALL_REASON_USER)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_REQUIRED)
+            }
         }
         val sessionId = packageInstaller.createSession(params)
 
@@ -106,6 +111,7 @@ class UpdateManager(private val context: Context) {
                         session.fsync(output)
                     }
                 }
+                session.setStagingProgress(1f)
 
                 val callbackIntent = Intent(context, UpdateInstallReceiver::class.java)
                     .setAction(UpdateInstallReceiver.ACTION_INSTALL_STATUS)
@@ -173,11 +179,45 @@ class UpdateManager(private val context: Context) {
         }
     }
 
+    private fun verifyApk(file: File, info: UpdateInfo) {
+        if (!file.isFile || file.length() <= 0L) error("APK 파일이 비어 있습니다")
+        val packageInfo = context.packageManager.getPackageArchiveInfo(file.path, 0)
+            ?: error("APK 파일 형식을 읽을 수 없습니다")
+        if (packageInfo.packageName != context.packageName) {
+            error("다른 앱의 APK가 다운로드되었습니다")
+        }
+        val downloadedVersionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            packageInfo.longVersionCode
+        } else {
+            @Suppress("DEPRECATION")
+            packageInfo.versionCode.toLong()
+        }
+        if (downloadedVersionCode != info.versionCode.toLong()) {
+            error("다운로드된 APK 버전이 업데이트 정보와 다릅니다")
+        }
+        info.sha256?.let { expected ->
+            val actual = file.inputStream().use { input ->
+                val digest = MessageDigest.getInstance("SHA-256")
+                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    digest.update(buffer, 0, count)
+                }
+                digest.digest().joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+            }
+            if (!actual.equals(expected, ignoreCase = true)) {
+                error("다운로드된 APK 검증에 실패했습니다")
+            }
+        }
+    }
+
     private fun parseManifest(json: String): UpdateInfo {
         val versionCode = json.matchInt("versionCode") ?: error("versionCode 없음")
         val versionName = json.matchString("versionName") ?: error("versionName 없음")
         val apkUrl = json.matchString("apkUrl") ?: error("apkUrl 없음")
-        return UpdateInfo(versionCode, versionName, apkUrl)
+        val sha256 = json.matchString("sha256")
+        return UpdateInfo(versionCode, versionName, apkUrl, sha256)
     }
 
     private fun String.matchInt(key: String): Int? =
