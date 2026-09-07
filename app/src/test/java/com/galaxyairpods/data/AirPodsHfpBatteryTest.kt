@@ -17,6 +17,11 @@ class AirPodsHfpBatteryTest {
     }
 
     @Test
+    fun parsesCommaSeparatedArguments() {
+        assertEquals(70, parseIphoneAccessoryBattery("[1, 1, 6]"))
+    }
+
+    @Test
     fun rejectsUnknownBatterySentinel() {
         assertNull(parseIphoneAccessoryBattery(listOf("1", "1", "15")))
     }

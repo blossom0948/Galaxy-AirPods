@@ -4,6 +4,8 @@ import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothHeadset
+import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothProfile
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -61,7 +63,7 @@ class AirPodsSystemReceiver : BroadcastReceiver() {
         ) ?: return
         if (!command.contains("IPHONEACCEV", ignoreCase = true)) return
 
-        val device = intent.airPodsDevice() ?: return
+        val device = intent.airPodsDevice(context) ?: return
         val name = device.airPodsName()
         if (!name.looksLikeAirPods()) return
         val battery = parseIphoneAccessoryBattery(
@@ -71,7 +73,7 @@ class AirPodsSystemReceiver : BroadcastReceiver() {
     }
 
     private fun handleSystemBatteryEvent(context: Context, intent: Intent) {
-        val device = intent.airPodsDevice() ?: return
+        val device = intent.airPodsDevice(context) ?: return
         val name = device.airPodsName()
         if (!name.looksLikeAirPods()) return
         val battery = intent.getIntExtra(BATTERY_LEVEL_EXTRA, -1)
@@ -102,29 +104,47 @@ class AirPodsSystemReceiver : BroadcastReceiver() {
     }
 
     @SuppressLint("MissingPermission")
-    private fun BluetoothDevice.airPodsName(): String =
-        runCatching { name }.getOrNull().orEmpty()
+    private fun BluetoothDevice.airPodsName(): String {
+        val remoteName = runCatching { name }.getOrNull().orEmpty()
+        val alias = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            runCatching { alias }.getOrNull().orEmpty()
+        } else {
+            ""
+        }
+        return alias.ifBlank { remoteName }
+    }
 
     private fun String.looksLikeAirPods(): Boolean =
         lowercase(Locale.US).replace("-", " ").contains("airpod") ||
             lowercase(Locale.US).contains("apple")
 
-    private fun Intent.airPodsDevice(): BluetoothDevice? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
-    } else {
-        @Suppress("DEPRECATION")
-        getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+    @SuppressLint("MissingPermission")
+    private fun Intent.airPodsDevice(context: Context): BluetoothDevice? {
+        val explicit = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+        }
+        if (explicit != null) return explicit
+
+        return runCatching {
+            context.getSystemService(BluetoothManager::class.java)
+                ?.getConnectedDevices(BluetoothProfile.HEADSET)
+                ?.firstOrNull { it.airPodsName().looksLikeAirPods() }
+        }.getOrNull()
     }
 
-    private companion object {
+    companion object {
         val START_ACTIONS = setOf(
             Intent.ACTION_BOOT_COMPLETED,
             Intent.ACTION_MY_PACKAGE_REPLACED,
             BluetoothAdapter.ACTION_STATE_CHANGED,
             BluetoothDeviceAction.ACL_CONNECTED,
+            BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED,
         )
         const val BATTERY_LEVEL_CHANGED_ACTION = "android.bluetooth.device.action.BATTERY_LEVEL_CHANGED"
-        const val BATTERY_LEVEL_EXTRA = "android.bluetooth.device.extra.BATTERY_LEVEL"
+        private const val BATTERY_LEVEL_EXTRA = "android.bluetooth.device.extra.BATTERY_LEVEL"
     }
 
     private object BluetoothDeviceAction {

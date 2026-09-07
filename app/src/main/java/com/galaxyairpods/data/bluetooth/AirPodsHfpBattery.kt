@@ -14,6 +14,7 @@ internal fun parseIphoneAccessoryBattery(raw: Any?): Int? {
         is IntArray -> raw.toList()
         is Array<*> -> raw.mapNotNull { it?.toString()?.toIntOrNull() }
         is List<*> -> raw.mapNotNull { it?.toString()?.toIntOrNull() }
+        is CharSequence -> Regex("-?\\d+").findAll(raw).map { it.value.toInt() }.toList()
         else -> return null
     }
     if (values.isEmpty()) return null

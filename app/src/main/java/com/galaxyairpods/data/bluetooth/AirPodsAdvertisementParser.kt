@@ -28,21 +28,22 @@ class AppleAirPodsParser : AirPodsPacketParser {
 
     override fun canParse(scanResult: ScanResult): Boolean =
         scanResult.scanRecord
-            ?.manufacturerSpecificData
-            ?.get(APPLE_COMPANY_ID)
-            ?.let { parseManufacturerData(it) != null }
+            ?.let { record ->
+                manufacturerDataCandidates(record).any { parseManufacturerData(it) != null }
+            }
             ?: false
 
     override fun parse(scanResult: ScanResult): ParsedAirPodsPacket? =
         scanResult.scanRecord
-            ?.manufacturerSpecificData
-            ?.get(APPLE_COMPANY_ID)
-            ?.let(::parseManufacturerData)
+            ?.let { record ->
+                manufacturerDataCandidates(record).firstNotNullOfOrNull(::parseManufacturerData)
+            }
 
     companion object {
         const val APPLE_COMPANY_ID = 0x004C
 
         private const val PROXIMITY_MESSAGE_TYPE = 0x07
+        private const val MANUFACTURER_DATA_AD_TYPE = 0xFF
         private const val PLAINTEXT_STATUS_PREFIX = 0x01
         private const val LEGACY_STATUS_PREFIX = 0x00
         private const val AIRPODS_STATUS_LENGTH = 25
@@ -98,6 +99,51 @@ class AppleAirPodsParser : AirPodsPacketParser {
                 }
             }
             return null
+        }
+
+        /**
+         * Parses the raw AD structures returned by ScanRecord.bytes.
+         *
+         * Android normally exposes this through manufacturerSpecificData, but
+         * some Samsung Bluetooth stacks have returned a raw record while the
+         * manufacturer map was empty. The manufacturer AD structure contains
+         * Apple's little-endian company identifier 0x004C.
+         */
+        fun parseScanRecordBytes(scanRecordBytes: ByteArray): ParsedAirPodsPacket? =
+            extractAppleManufacturerData(scanRecordBytes)
+                .firstNotNullOfOrNull(::parseManufacturerData)
+                ?: parseManufacturerData(scanRecordBytes)
+
+        private fun manufacturerDataCandidates(record: android.bluetooth.le.ScanRecord): List<ByteArray> =
+            buildList {
+                record.manufacturerSpecificData.get(APPLE_COMPANY_ID)?.let(::add)
+                addAll(extractAppleManufacturerData(record.bytes))
+            }.distinctBy { it.contentHashCode() }
+
+        private fun extractAppleManufacturerData(scanRecordBytes: ByteArray): List<ByteArray> {
+            if (scanRecordBytes.isEmpty()) return emptyList()
+
+            val result = mutableListOf<ByteArray>()
+            var offset = 0
+            while (offset < scanRecordBytes.size) {
+                val fieldLength = scanRecordBytes[offset].u8()
+                if (fieldLength == 0) break
+
+                val fieldStart = offset + 1
+                val fieldEnd = fieldStart + fieldLength
+                if (fieldEnd > scanRecordBytes.size) break
+
+                val fieldType = scanRecordBytes[fieldStart].u8()
+                if (fieldType == MANUFACTURER_DATA_AD_TYPE && fieldLength >= 3) {
+                    val companyId = scanRecordBytes[fieldStart + 1].u8() or
+                        (scanRecordBytes[fieldStart + 2].u8() shl 8)
+                    if (companyId == APPLE_COMPANY_ID) {
+                        result += scanRecordBytes.copyOfRange(fieldStart + 3, fieldEnd)
+                    }
+                }
+                offset = fieldEnd
+            }
+            return result
         }
 
         /**
@@ -231,4 +277,7 @@ class AirPodsParserRegistry(
 ) {
     fun parse(scanResult: ScanResult): ParsedAirPodsPacket? =
         parsers.firstOrNull { it.canParse(scanResult) }?.parse(scanResult)
+
+    fun parseRawScanRecord(scanRecordBytes: ByteArray): ParsedAirPodsPacket? =
+        AppleAirPodsParser.parseScanRecordBytes(scanRecordBytes)
 }

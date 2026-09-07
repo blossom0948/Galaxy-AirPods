@@ -5,6 +5,7 @@ import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothHeadset
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
@@ -13,11 +14,13 @@ import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.content.ContextCompat
 import com.galaxyairpods.domain.model.AirPodsModel
 import com.galaxyairpods.domain.model.ParsedAirPodsPacket
+import com.galaxyairpods.service.AirPodsSystemReceiver
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -67,6 +70,14 @@ class AirPodsBleScanner(private val context: Context) {
     private var pendingScanIntent: PendingIntent? = null
     @Volatile
     private var pendingScanActive = false
+    private var classicBatteryReceiverRegistered = false
+    private var directScanFallbackJob: Job? = null
+    private var legacyScanFallbackJob: Job? = null
+    private var legacyScanning = false
+    private var directScanIsFiltered = false
+    @Volatile
+    private var lastValidatedAt = 0L
+    private val classicBatteryReceiver = AirPodsSystemReceiver()
     private val profileProxies = mutableMapOf<Int, BluetoothProfile>()
     private val bluetoothManager: BluetoothManager? by lazy {
         context.getSystemService(BluetoothManager::class.java)
@@ -101,8 +112,18 @@ class AirPodsBleScanner(private val context: Context) {
         }
 
         override fun onScanFailed(errorCode: Int) {
+            if (directScanIsFiltered && restartUnfilteredScanAfterFailure()) return
             scanning = false
+            directScanIsFiltered = false
             _status.value = "스캔 실패: error $errorCode"
+        }
+    }
+
+    private val legacyScanCallback = object : BluetoothAdapter.LeScanCallback {
+        override fun onLeScan(device: BluetoothDevice, rssi: Int, scanRecord: ByteArray) {
+            parserRegistry.parseRawScanRecord(scanRecord)?.let { parsed ->
+                emitValidatedPacket(device.address, parsed)
+            }
         }
     }
 
@@ -122,6 +143,7 @@ class AirPodsBleScanner(private val context: Context) {
             return
         }
 
+        registerClassicBatteryReceiver()
         startConnectionMonitor()
         if (scanning) return
         if (!hasScanPermission()) {
@@ -135,8 +157,15 @@ class AirPodsBleScanner(private val context: Context) {
                 _status.value = "BLE 스캐너를 사용할 수 없어 Bluetooth 연결만 확인합니다"
                 return
             }
-            if (startBleScan(scanner, scanMode)) {
+            lastValidatedAt = 0L
+            if (startBleScan(scanner, scanMode, filtered = true)) {
                 startPendingIntentScan(scanner, scanMode)
+                scheduleLegacyScanFallback()
+                return
+            }
+            if (startBleScan(scanner, scanMode, filtered = false)) {
+                startPendingIntentScan(scanner, scanMode)
+                scheduleLegacyScanFallback()
                 return
             }
             _status.value = "Bluetooth 스캔을 시작하지 못했습니다"
@@ -147,9 +176,14 @@ class AirPodsBleScanner(private val context: Context) {
         }
     }
 
+    @SuppressLint("MissingPermission")
     @Synchronized
     fun stop() {
-        if (scanning && hasScanPermission()) {
+        directScanFallbackJob?.cancel()
+        directScanFallbackJob = null
+        legacyScanFallbackJob?.cancel()
+        legacyScanFallbackJob = null
+        if (hasScanPermission()) {
             try {
                 adapter?.bluetoothLeScanner?.stopScan(callback)
                 if (pendingScanActive) {
@@ -159,25 +193,31 @@ class AirPodsBleScanner(private val context: Context) {
                 _status.value = "권한이 없어 BLE 검색을 중지하지 못했습니다"
             }
         }
+        if (legacyScanning && hasScanPermission()) {
+            runCatching { adapter?.stopLeScan(legacyScanCallback) }
+        }
         scanning = false
+        directScanIsFiltered = false
         pendingScanActive = false
         pendingScanIntent = null
+        legacyScanning = false
         connectionMonitorJob?.cancel()
         connectionMonitorJob = null
         lastBluetoothEvent = null
+        unregisterClassicBatteryReceiver()
         closeProfileProxies()
         _status.value = "검색 중지"
     }
 
     @SuppressLint("MissingPermission")
+    @Synchronized
     private fun startBleScan(
         scanner: android.bluetooth.le.BluetoothLeScanner,
         scanMode: Int,
+        filtered: Boolean,
+        scheduleFallback: Boolean = filtered,
     ): Boolean {
-        // Do not use an offloaded manufacturer filter here. Several Samsung
-        // Bluetooth stacks accept the filtered scan but silently deliver no
-        // callbacks for Apple's rotating advertisements. We scan all BLE
-        // advertisements and apply the strict Apple parser in process instead.
+        val filters = AIRPODS_SCAN_FILTERS.takeIf { filtered }
         val settings = ScanSettings.Builder()
             .setScanMode(scanMode)
             .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
@@ -193,28 +233,130 @@ class AirPodsBleScanner(private val context: Context) {
             .build()
 
         return try {
-            scanner.startScan(null, settings, callback)
+            scanner.startScan(filters, settings, callback)
             scanning = true
+            directScanIsFiltered = filtered
             _status.value = "AirPods 신호 검색 중"
+            if (scheduleFallback) scheduleUnfilteredFallback(scanner, scanMode)
             true
         } catch (_: SecurityException) {
             false
         } catch (_: IllegalArgumentException) {
-            // A few OEM stacks reject one of the optional settings. Retry with
-            // the minimal platform-supported configuration before giving up.
+            // Some OEM stacks reject an optional setting or cannot offload the
+            // manufacturer filter. Retry with the minimal configuration and
+            // then use the unfiltered path if necessary.
             runCatching {
                 scanner.startScan(
-                    null,
+                    filters,
                     ScanSettings.Builder().setScanMode(scanMode).build(),
                     callback,
                 )
                 scanning = true
+                directScanIsFiltered = filtered
                 _status.value = "AirPods 신호 검색 중"
+                if (scheduleFallback) scheduleUnfilteredFallback(scanner, scanMode)
                 true
-            }.getOrDefault(false)
+            }.getOrElse {
+                if (filtered) {
+                    startBleScan(scanner, scanMode, filtered = false, scheduleFallback = false)
+                } else {
+                    false
+                }
+            }
         } catch (_: IllegalStateException) {
             false
         }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun scheduleUnfilteredFallback(
+        scanner: android.bluetooth.le.BluetoothLeScanner,
+        scanMode: Int,
+    ) {
+        directScanFallbackJob?.cancel()
+        directScanFallbackJob = monitorScope.launch {
+            delay(DIRECT_FILTER_FALLBACK_DELAY_MS)
+            if (!scanning || !directScanIsFiltered || lastValidatedAt != 0L) return@launch
+
+            runCatching { scanner.stopScan(callback) }
+            startBleScan(scanner, scanMode, filtered = false, scheduleFallback = false)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun scheduleLegacyScanFallback() {
+        legacyScanFallbackJob?.cancel()
+        legacyScanFallbackJob = monitorScope.launch {
+            delay(LEGACY_SCAN_FALLBACK_DELAY_MS)
+            if (lastValidatedAt != 0L || legacyScanning) return@launch
+            val bluetoothAdapter = adapter ?: return@launch
+            legacyScanning = runCatching {
+                bluetoothAdapter.startLeScan(legacyScanCallback)
+            }.getOrDefault(false)
+        }
+    }
+
+    private fun emitValidatedPacket(deviceId: String, parsed: ParsedAirPodsPacket) {
+        val seenAt = System.currentTimeMillis()
+        lastValidatedAt = seenAt
+        directScanFallbackJob?.cancel()
+        _status.value = "AirPods 신호 감지됨"
+        _validatedPackets.tryEmit(
+            ValidatedPacketEvent(
+                deviceId = deviceId,
+                packet = parsed,
+                seenAt = seenAt,
+            ),
+        )
+    }
+
+    @SuppressLint("MissingPermission")
+    @Synchronized
+    private fun restartUnfilteredScanAfterFailure(): Boolean {
+        val bluetoothScanner = adapter?.bluetoothLeScanner ?: return false
+        return runCatching {
+            bluetoothScanner.startScan(
+                null,
+                ScanSettings.Builder()
+                    .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+                    .setReportDelay(0L)
+                    .build(),
+                callback,
+            )
+            scanning = true
+            directScanIsFiltered = false
+            _status.value = "AirPods 신호 검색 중"
+            true
+        }.getOrDefault(false)
+    }
+
+    @SuppressLint("MissingPermission", "UnspecifiedRegisterReceiverFlag")
+    private fun registerClassicBatteryReceiver() {
+        if (classicBatteryReceiverRegistered) return
+
+        val filter = IntentFilter().apply {
+            addAction(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED)
+            addAction(BluetoothHeadset.ACTION_VENDOR_SPECIFIC_HEADSET_EVENT)
+            addAction(AirPodsSystemReceiver.BATTERY_LEVEL_CHANGED_ACTION)
+        }
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.registerReceiver(
+                    classicBatteryReceiver,
+                    filter,
+                    Context.RECEIVER_EXPORTED,
+                )
+            } else {
+                context.registerReceiver(classicBatteryReceiver, filter)
+            }
+            classicBatteryReceiverRegistered = true
+        }
+    }
+
+    private fun unregisterClassicBatteryReceiver() {
+        if (!classicBatteryReceiverRegistered) return
+        runCatching { context.unregisterReceiver(classicBatteryReceiver) }
+        classicBatteryReceiverRegistered = false
     }
 
     @SuppressLint("MissingPermission")
@@ -238,17 +380,9 @@ class AirPodsBleScanner(private val context: Context) {
             intent,
             flags,
         )
-        val filters = listOf(
-            // Match the protocol byte only: pairing mode is 0x0E and paired
-            // mode is 0x19, so filtering on the old length drops valid cases.
-            ScanFilter.Builder()
-                .setManufacturerData(
-                    AppleAirPodsParser.APPLE_COMPANY_ID,
-                    byteArrayOf(0x07),
-                    byteArrayOf(0xFF.toByte()),
-                )
-                .build(),
-        )
+        // Match the protocol byte only: pairing mode is 0x0E and paired mode
+        // is 0x19, so filtering on the old length drops valid cases.
+        val filters = AIRPODS_SCAN_FILTERS
         val settings = ScanSettings.Builder()
             .setScanMode(scanMode)
             .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
@@ -280,13 +414,9 @@ class AirPodsBleScanner(private val context: Context) {
 
     private fun append(result: ScanResult) {
         parserRegistry.parse(result)?.let { parsed ->
-            _status.value = "AirPods 신호 감지됨"
-            _validatedPackets.tryEmit(
-                ValidatedPacketEvent(
-                    deviceId = runCatching { result.device.address }.getOrDefault("unknown"),
-                    packet = parsed,
-                    seenAt = System.currentTimeMillis(),
-                ),
+            emitValidatedPacket(
+                deviceId = runCatching { result.device.address }.getOrDefault("unknown"),
+                parsed = parsed,
             )
         } ?: run {
             if (lastBluetoothEvent == null) _status.value = "AirPods 연결 상태 확인 중"
@@ -432,7 +562,18 @@ class AirPodsBleScanner(private val context: Context) {
         }
 
     companion object {
+        private val AIRPODS_SCAN_FILTERS = listOf(
+            ScanFilter.Builder()
+                .setManufacturerData(
+                    AppleAirPodsParser.APPLE_COMPANY_ID,
+                    byteArrayOf(0x07),
+                    byteArrayOf(0xFF.toByte()),
+                )
+                .build(),
+        )
         private const val PENDING_SCAN_REQUEST_CODE = 1002
+        private const val DIRECT_FILTER_FALLBACK_DELAY_MS = 6_000L
+        private const val LEGACY_SCAN_FALLBACK_DELAY_MS = 12_000L
         private const val CONNECTION_POLL_MS = 1_500L
         private const val EVENT_REFRESH_MS = 30_000L
         private val PROFILE_PROXY_IDS = buildList {
