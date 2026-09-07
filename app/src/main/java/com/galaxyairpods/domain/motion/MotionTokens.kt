@@ -1,11 +1,7 @@
 package com.galaxyairpods.domain.motion
 
-import com.galaxyairpods.domain.model.PreviewPreset
-
 /**
- * Reverse-engineering baseline for Galaxy implementation.
- * NOT Apple's private/internal animation constants.
- * Tune against current iOS reference footage and Preview Lab.
+ * Stable motion values used by the production popup surface.
  */
 object MotionTokens {
     const val CardInitialYOffsetRatio = 0.22f
@@ -45,13 +41,5 @@ data class MotionLabSettings(
 ) {
     companion object {
         val Default = MotionLabSettings()
-
-        fun forPreset(preset: PreviewPreset): MotionLabSettings = when (preset) {
-            PreviewPreset.EXIT,
-            PreviewPreset.INTERRUPT_ENTER_TO_EXIT,
-            PreviewPreset.INTERRUPT_EXIT_TO_ENTER,
-            -> Default.copy(exitY = 0.18f)
-            else -> Default
-        }
     }
 }

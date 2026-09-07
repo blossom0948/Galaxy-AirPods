@@ -1,46 +1,42 @@
 # AirPods Galaxy
 
-Galaxy/Android에서 AirPods 상태를 확인하기 위한 독립형 companion 앱 프로토타입이다. 홈 화면에서 좌/우 이어버드와 케이스 배터리, 충전 상태, 마지막 갱신 시각을 보여주고, Preview Lab에서 케이스 팝업의 상태 변화와 모션을 실기기 없이 튜닝할 수 있다.
+Galaxy에서 AirPods의 실제 BLE 상태를 확인하는 Android 앱입니다.
 
-이 프로젝트는 Apple의 비공개 리소스나 제품 이미지를 포함하지 않는다. 제품 렌더는 자체 제작 placeholder Canvas이고, Apple 관련 표기는 호환 대상 설명에만 사용한다.
+## 동작
 
-## 지원 범위
+- Apple 제조사 ID 0x004C의 AirPods 광고 패킷을 스캔합니다.
+- 지원 모델의 L/R/케이스 배터리와 충전·케이스 상태를 표시합니다.
+- 앱을 열지 않아도 포그라운드 서비스가 감지를 유지하고, 위젯·알림·오버레이를 갱신합니다.
+- 설정에서 자동 감지 또는 AirPods 세대/Pro/Max 모델을 선택할 수 있습니다.
+- 앱 시작 시 GitHub의 update.json을 확인하고 새 Release APK를 Android 설치 화면으로 내려받습니다.
 
-- Android 10(API 29) 이상을 우선 목표로 한다.
-- 현재 앱 UI와 모션은 fake/preview 상태로 독립 검증할 수 있다.
-- BLE parser는 raw packet을 수집하고 구조를 검증할 수 있는 진단 경로를 제공한다. 실측 test vector가 없는 모델은 배터리 값을 추측하지 않는다.
+지원 모델 모양은 AirPods 1·2·3·4, AirPods 4 ANC, AirPods Pro 1·2·2 USB-C·3, AirPods Max·Max USB-C·Max 2입니다.
 
 ## 실행
 
-Android Studio에서 프로젝트를 연 뒤 JDK 17과 Android SDK 35를 선택해 `app`을 실행한다.
+Android Studio에서 JDK 17과 Android SDK 35로 app을 실행합니다.
 
-1. 앱을 실행하고 Bluetooth/Nearby devices 권한을 허용한다.
-2. `Preview`에서 `KNOWN_OPEN` 또는 `FIRST_PAIRING`을 눌러 팝업을 확인한다.
-3. 실제 패킷을 확인하려면 `Debug`에서 `Start scan`을 누르고 [DEVICE_VALIDATION_STEPS.md](docs/DEVICE_VALIDATION_STEPS.md)의 순서로 수집한다.
-4. 홈 화면 위젯을 추가하면 저장된 최신 상태를 표시한다. 아직 저장된 실제 상태가 없으면 배터리를 `--`로 표시한다.
+1. Bluetooth/Nearby devices와 알림 권한을 허용합니다.
+2. AirPods 케이스를 열거나 이어버드를 사용 중인 상태에서 앱을 엽니다.
+3. 다른 앱 위 팝업이 필요하면 설정에서 오버레이 권한을 허용합니다.
+4. 홈 화면에 위젯을 추가하면 마지막으로 실제 감지된 배터리를 표시합니다.
 
-## 권한과 제한
+데이터를 아직 받은 적이 없으면 배터리는 --로 표시됩니다. 임의의 미리보기 배터리 값은 사용하지 않습니다.
 
-자동 팝업은 Android의 overlay 권한과 제조사 백그라운드 정책 영향을 받는다. 권한이 없으면 앱 내부 팝업/위젯은 계속 사용할 수 있고, 자동 팝업은 fallback 안내로 전환한다. 자세한 내용은 [PLATFORM_LIMITATIONS.md](docs/PLATFORM_LIMITATIONS.md)에 기록했다.
+## 업데이트 배포
 
-## 구조
+update.json의 versionCode가 현재 앱보다 높으면 설정에서 다운로드 및 설치를 누를 수 있습니다. APK는 GitHub Release에 AirPodsGalaxy.apk 이름으로 업로드해야 합니다.
 
-```text
+업데이트 APK는 최초 설치 APK와 같은 서명 키로 빌드해야 Android가 기존 앱을 교체할 수 있습니다. Android 보안 정책상 설치 단계에서는 사용자 확인이 표시될 수 있습니다.
+
+## 프로젝트 구조
+
 app/src/main/java/com/galaxyairpods/
-  data/bluetooth       scanner + parser diagnostics
-  data/persistence     DataStore mapping
-  domain/model         AirPods and popup state
-  domain/motion        reverse-engineering baseline tokens
-  domain/popup         interruptible event controller
-  ui/screens            Home / Preview / Debug / Settings
-  ui/components         product renderer / battery / popup surface
-  widget                Glance widget
-```
-
-## 상태 데이터 원칙
-
-`null`은 확인할 수 없는 값이고 `0`은 실제 0%다. `LIVE`, `RECENT`, `STALE`, `UNKNOWN` confidence를 UI에 함께 사용해 오래된 값을 실시간 값처럼 표시하지 않는다.
-
-## 아직 완료로 표시하지 않는 항목
-
-실제 AirPods 모델별 L/R/Case BLE parsing과 Galaxy 실기기 성능 검증은 하드웨어와 익명화된 packet sample이 필요하다. 이 저장소는 그 작업을 위한 debug surface와 parser interface를 먼저 제공한다.
+  data/bluetooth       BLE 스캐너와 AirPods packet parser
+  data/persistence     DataStore 저장
+  domain/model         AirPods와 팝업 상태
+  domain/popup         팝업 이벤트 상태기계
+  service              백그라운드 감지와 오버레이
+  ui/components        모델별 제품 렌더러·배터리·팝업
+  widget               홈 화면 위젯
+  update               GitHub Release 기반 업데이트

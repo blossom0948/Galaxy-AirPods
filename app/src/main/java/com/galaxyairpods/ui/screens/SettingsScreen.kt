@@ -10,21 +10,29 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.galaxyairpods.domain.model.AirPodsModel
 import com.galaxyairpods.permissions.PermissionManager
+import com.galaxyairpods.update.UpdateInfo
+import com.galaxyairpods.update.UpdateState
 
 @Composable
 fun SettingsScreen(
@@ -32,35 +40,44 @@ fun SettingsScreen(
     showOnCaseOpen: Boolean,
     popupDuration: Int,
     backgroundDetection: Boolean,
+    modelOverride: AirPodsModel?,
     reducedMotion: Boolean,
     onAutoPopupChange: (Boolean) -> Unit,
     onCaseOpenChange: (Boolean) -> Unit,
     onPopupDurationChange: (Int) -> Unit,
     onBackgroundDetectionChange: (Boolean) -> Unit,
+    onModelOverrideChange: (AirPodsModel?) -> Unit,
     onTestOverlay: () -> Unit,
     onReducedMotionChange: (Boolean) -> Unit,
+    onStartScanning: () -> Unit,
+    updateState: UpdateState,
+    onCheckForUpdates: () -> Unit,
+    onInstallUpdate: (UpdateInfo) -> Unit,
 ) {
     val context = LocalContext.current
     val overlayGranted = Settings.canDrawOverlays(context)
     val permissionsLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
-    ) { }
+    ) { onStartScanning() }
 
     Column(
         modifier = Modifier.padding(horizontal = 18.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text("Settings", style = MaterialTheme.typography.headlineMedium)
-        Text("권한, 자동 팝업, 접근성 동작을 조정합니다.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("설정", style = MaterialTheme.typography.headlineMedium)
 
-        SettingsToggle("Auto popup", "케이스/연결 이벤트에서 팝업 surface를 표시", autoPopup, onAutoPopupChange)
-        SettingsToggle("Show when case opens", "케이스 열림 상태를 감지했을 때 자동 표시", showOnCaseOpen, onCaseOpenChange)
-        SettingsToggle("Background detection", "저전력 foreground notification으로 주변 상태 감지", backgroundDetection, onBackgroundDetectionChange)
-        SettingsToggle("Reduce motion", "정보를 즉시 보여주고 장식적인 이동을 줄임", reducedMotion, onReducedMotionChange)
+        ModelSelector(modelOverride, onModelOverrideChange)
+
+        UpdateCard(updateState, onCheckForUpdates, onInstallUpdate)
+
+        SettingsToggle("자동 팝업", autoPopup, onAutoPopupChange)
+        SettingsToggle("케이스를 열 때 표시", showOnCaseOpen, onCaseOpenChange)
+        SettingsToggle("백그라운드 감지", backgroundDetection, onBackgroundDetectionChange)
+        SettingsToggle("동작 줄이기", reducedMotion, onReducedMotionChange)
 
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
-                Text("Popup duration", style = MaterialTheme.typography.titleMedium)
+                Text("팝업 표시 시간", style = MaterialTheme.typography.titleMedium)
                 Text("${popupDuration}초", color = MaterialTheme.colorScheme.primary)
                 Slider(
                     value = popupDuration.toFloat(),
@@ -73,34 +90,28 @@ fun SettingsScreen(
 
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
-                Text("Permissions", style = MaterialTheme.typography.titleMedium)
+                Text("권한", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Bluetooth/Nearby devices: ${if (PermissionManager.allGranted(context, PermissionManager.bluetoothPermissions())) "허용됨" else "필요함"}",
+                    if (PermissionManager.allGranted(context, PermissionManager.runtimePermissions())) {
+                        "허용됨"
+                    } else {
+                        "Bluetooth와 알림 권한이 필요합니다"
+                    },
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Button(onClick = { permissionsLauncher.launch(PermissionManager.bluetoothPermissions()) }) {
-                    Text("Bluetooth 권한 요청")
-                }
-                Text(
-                    "알림 권한은 백그라운드 fallback notification에 사용할 수 있습니다.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                if (PermissionManager.notificationPermissions().isNotEmpty()) {
-                    Button(onClick = { permissionsLauncher.launch(PermissionManager.notificationPermissions()) }) {
-                        Text("알림 권한 요청")
-                    }
-                }
+                Button(onClick = {
+                    permissionsLauncher.launch(PermissionManager.runtimePermissions())
+                }) { Text("권한 허용") }
             }
         }
 
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp)) {
-                Text("Other apps overlay", style = MaterialTheme.typography.titleMedium)
+                Text("다른 앱 위 팝업", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    if (overlayGranted) "허용됨 · 자동 팝업 사용 가능" else "꺼짐 · 앱 내부 팝업과 위젯은 계속 사용 가능",
-                    color = if (overlayGranted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    if (overlayGranted) "허용됨" else "오버레이 권한이 필요합니다",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Button(onClick = {
                     context.startActivity(
@@ -110,20 +121,77 @@ fun SettingsScreen(
                         ),
                     )
                 }) { Text("오버레이 권한 설정") }
-                Button(onClick = onTestOverlay, enabled = overlayGranted) {
-                    Text("오버레이 테스트")
-                }
+                Button(onClick = onTestOverlay, enabled = overlayGranted) { Text("팝업 테스트") }
             }
         }
+    }
+}
 
-        Card(Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(16.dp)) {
-                Text("Platform limitations", style = MaterialTheme.typography.titleMedium)
-                Text(
-                    "Android와 Samsung One UI는 백그라운드 BLE/overlay를 제한할 수 있습니다. 지원되는 공식 API와 fallback notification 범위 안에서 동작하며, 실기기 결과는 DEVICE_TEST_MATRIX.md에 기록합니다.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+@Composable
+private fun UpdateCard(
+    state: UpdateState,
+    onCheckForUpdates: () -> Unit,
+    onInstallUpdate: (UpdateInfo) -> Unit,
+) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp)) {
+            Text("업데이트", style = MaterialTheme.typography.titleMedium)
+            when (state) {
+                UpdateState.Idle -> Text("업데이트 확인 전")
+                UpdateState.Checking -> Text("최신 버전 확인 중…")
+                UpdateState.UpToDate -> Text("최신 버전입니다")
+                is UpdateState.Available -> {
+                    Text("새 버전 ${state.info.versionName} 사용 가능")
+                    Button(onClick = { onInstallUpdate(state.info) }) {
+                        Text("다운로드 및 설치")
+                    }
+                }
+                is UpdateState.Downloading -> {
+                    Text("다운로드 중 ${state.progress}%")
+                }
+                is UpdateState.Ready -> Text("설치 준비 완료")
+                is UpdateState.Error -> {
+                    Text(state.message, color = MaterialTheme.colorScheme.error)
+                    Button(onClick = onCheckForUpdates) { Text("다시 확인") }
+                }
+            }
+            if (state is UpdateState.UpToDate || state is UpdateState.Error) {
+                Button(onClick = onCheckForUpdates) { Text("업데이트 확인") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModelSelector(
+    modelOverride: AirPodsModel?,
+    onModelOverrideChange: (AirPodsModel?) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val options: List<AirPodsModel?> = listOf(null) + AirPodsModel.entries.filter { it != AirPodsModel.UNKNOWN }
+
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp)) {
+            Text("제품 모양", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "자동 감지하거나 원하는 모델 모양을 선택합니다.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            Button(onClick = { expanded = true }) {
+                Text(modelOverride?.label ?: "자동 감지")
+            }
+            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                options.forEach { model ->
+                    DropdownMenuItem(
+                        text = { Text(model?.label ?: "자동 감지") },
+                        onClick = {
+                            onModelOverrideChange(model)
+                            expanded = false
+                        },
+                    )
+                }
             }
         }
     }
@@ -132,7 +200,6 @@ fun SettingsScreen(
 @Composable
 private fun SettingsToggle(
     title: String,
-    description: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
 ) {
@@ -141,10 +208,7 @@ private fun SettingsToggle(
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column(Modifier.weight(1f)) {
-                Text(title, style = MaterialTheme.typography.titleMedium)
-                Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
+            Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
             Switch(checked = checked, onCheckedChange = onCheckedChange)
         }
     }

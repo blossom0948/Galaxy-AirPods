@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import com.galaxyairpods.domain.model.AirPodsState
 import com.galaxyairpods.domain.model.BatterySlot
 import com.galaxyairpods.domain.model.DataConfidence
+import com.galaxyairpods.domain.model.isMax
 import kotlinx.coroutines.delay
 
 @Composable
@@ -42,33 +43,46 @@ fun BatteryGrid(
         modifier = modifier,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        BatteryItem(
-            slot = BatterySlot.LEFT,
-            battery = state.leftBattery,
-            charging = state.leftCharging == true,
-            confidence = state.confidence,
-            reveal = reveal,
-            revealDelayMs = 0L,
-            modifier = Modifier.weight(1f),
-        )
-        BatteryItem(
-            slot = BatterySlot.RIGHT,
-            battery = state.rightBattery,
-            charging = state.rightCharging == true,
-            confidence = state.confidence,
-            reveal = reveal,
-            revealDelayMs = staggerMs,
-            modifier = Modifier.weight(1f),
-        )
-        BatteryItem(
-            slot = BatterySlot.CASE,
-            battery = state.caseBattery,
-            charging = state.caseCharging == true,
-            confidence = state.confidence,
-            reveal = reveal,
-            revealDelayMs = staggerMs * 2,
-            modifier = Modifier.weight(1f),
-        )
+        if (state.model.isMax) {
+            BatteryItem(
+                slot = BatterySlot.LEFT,
+                labelOverride = "헤드폰",
+                battery = state.leftBattery,
+                charging = state.leftCharging == true,
+                confidence = state.confidence,
+                reveal = reveal,
+                revealDelayMs = 0L,
+                modifier = Modifier.weight(1f),
+            )
+        } else {
+            BatteryItem(
+                slot = BatterySlot.LEFT,
+                battery = state.leftBattery,
+                charging = state.leftCharging == true,
+                confidence = state.confidence,
+                reveal = reveal,
+                revealDelayMs = 0L,
+                modifier = Modifier.weight(1f),
+            )
+            BatteryItem(
+                slot = BatterySlot.RIGHT,
+                battery = state.rightBattery,
+                charging = state.rightCharging == true,
+                confidence = state.confidence,
+                reveal = reveal,
+                revealDelayMs = staggerMs,
+                modifier = Modifier.weight(1f),
+            )
+            BatteryItem(
+                slot = BatterySlot.CASE,
+                battery = state.caseBattery,
+                charging = state.caseCharging == true,
+                confidence = state.confidence,
+                reveal = reveal,
+                revealDelayMs = staggerMs * 2,
+                modifier = Modifier.weight(1f),
+            )
+        }
     }
 }
 
@@ -80,6 +94,7 @@ fun BatteryItem(
     confidence: DataConfidence,
     reveal: Boolean,
     revealDelayMs: Long,
+    labelOverride: String? = null,
     modifier: Modifier = Modifier,
 ) {
     var itemVisible by remember { mutableStateOf(false) }
@@ -110,7 +125,10 @@ fun BatteryItem(
 
     Surface(
         modifier = modifier
-            .semantics { contentDescription = "${slot.label} 배터리 ${battery?.let { "$it 퍼센트" } ?: "확인 불가"}" },
+            .semantics {
+                contentDescription = (labelOverride ?: slot.label) + " 배터리 " +
+                    (battery?.let { it.toString() + " 퍼센트" } ?: "확인 불가")
+            },
         shape = MaterialTheme.shapes.large,
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = alpha),
     ) {
@@ -124,7 +142,7 @@ fun BatteryItem(
                 modifier = Modifier.size(40.dp),
             )
             Spacer(Modifier.height(5.dp))
-            Text(slot.label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha))
+            Text(labelOverride ?: slot.label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha))
             Text(
                 text = battery?.let { "$it%" } ?: "--",
                 style = MaterialTheme.typography.titleMedium,

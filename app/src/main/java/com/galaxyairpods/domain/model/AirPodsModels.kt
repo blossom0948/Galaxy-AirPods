@@ -1,11 +1,32 @@
 package com.galaxyairpods.domain.model
 
 enum class AirPodsModel(val label: String) {
-    AIRPODS_PRO("AirPods Pro"),
-    AIRPODS("AirPods"),
+    AIRPODS_GEN1("AirPods (1세대)"),
+    AIRPODS_GEN2("AirPods (2세대)"),
+    AIRPODS_GEN3("AirPods (3세대)"),
+    AIRPODS_GEN4("AirPods (4세대)"),
+    AIRPODS_GEN4_ANC("AirPods (4세대 ANC)"),
+    AIRPODS_PRO("AirPods Pro (1세대)"),
+    AIRPODS_PRO2("AirPods Pro (2세대)"),
+    AIRPODS_PRO2_USBC("AirPods Pro (2세대 USB-C)"),
+    AIRPODS_PRO3("AirPods Pro (3세대)"),
     AIRPODS_MAX("AirPods Max"),
-    UNKNOWN("Unknown AirPods"),
+    AIRPODS_MAX_USBC("AirPods Max (USB-C)"),
+    AIRPODS_MAX2("AirPods Max (2세대)"),
+    AIRPODS("AirPods"),
+    UNKNOWN("AirPods"),
 }
+
+val AirPodsModel.isMax: Boolean
+    get() = this == AirPodsModel.AIRPODS_MAX ||
+        this == AirPodsModel.AIRPODS_MAX_USBC ||
+        this == AirPodsModel.AIRPODS_MAX2
+
+val AirPodsModel.isPro: Boolean
+    get() = this == AirPodsModel.AIRPODS_PRO ||
+        this == AirPodsModel.AIRPODS_PRO2 ||
+        this == AirPodsModel.AIRPODS_PRO2_USBC ||
+        this == AirPodsModel.AIRPODS_PRO3
 
 enum class DataConfidence(val label: String) {
     LIVE("실시간"),
@@ -69,7 +90,12 @@ data class AirPodsState(
             now - seen > staleAfterMs -> DataConfidence.STALE
             else -> confidence
         }
-        return copy(confidence = resolved)
+        val isFresh = now - seen <= staleAfterMs
+        return copy(
+            confidence = resolved,
+            connected = if (isFresh) connected else false,
+            detected = if (isFresh) detected else false,
+        )
     }
 
     companion object {

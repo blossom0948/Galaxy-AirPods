@@ -46,17 +46,3 @@ data class PopupUiState(
     val isVisible: Boolean
         get() = phase != PopupPhase.HIDDEN
 }
-
-enum class PreviewPreset(val label: String) {
-    FIRST_PAIRING("FIRST_PAIRING"),
-    KNOWN_OPEN("KNOWN_OPEN"),
-    CONNECTED("CONNECTED"),
-    LEFT_REMOVED("LEFT_REMOVED"),
-    RIGHT_REMOVED("RIGHT_REMOVED"),
-    BOTH_REMOVED("BOTH_REMOVED"),
-    CHARGING("CHARGING"),
-    LOW_BATTERY("LOW_BATTERY"),
-    EXIT("EXIT"),
-    INTERRUPT_ENTER_TO_EXIT("ENTER → EXIT"),
-    INTERRUPT_EXIT_TO_ENTER("EXIT → ENTER"),
-}

@@ -19,6 +19,8 @@ object PermissionManager {
         emptyArray()
     }
 
+    fun runtimePermissions(): Array<String> = bluetoothPermissions() + notificationPermissions()
+
     fun allGranted(context: Context, permissions: Array<String>): Boolean = permissions.all {
         ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
     }

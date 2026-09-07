@@ -67,6 +67,7 @@ class AirPodsBleScanner(private val context: Context) {
     val validatedPackets: SharedFlow<ValidatedPacketEvent> = _validatedPackets.asSharedFlow()
 
     private val parserRegistry = AirPodsParserRegistry()
+    private var scanning = false
     private val adapter: BluetoothAdapter? by lazy {
         context.getSystemService(BluetoothManager::class.java)?.adapter
     }
@@ -81,11 +82,13 @@ class AirPodsBleScanner(private val context: Context) {
         }
 
         override fun onScanFailed(errorCode: Int) {
+            scanning = false
             _status.value = "스캔 실패: error $errorCode"
         }
     }
 
     fun start(scanMode: Int = ScanSettings.SCAN_MODE_LOW_LATENCY) {
+        if (scanning) return
         if (!hasScanPermission()) {
             _status.value = "Bluetooth/Nearby devices 권한이 필요합니다"
             return
@@ -100,23 +103,32 @@ class AirPodsBleScanner(private val context: Context) {
             return
         }
         try {
-            bluetoothAdapter.bluetoothLeScanner?.startScan(
+            val scanner = bluetoothAdapter.bluetoothLeScanner
+            if (scanner == null) {
+                _status.value = "Bluetooth LE 스캐너를 사용할 수 없습니다"
+                return
+            }
+            scanner.startScan(
                 null,
                 ScanSettings.Builder()
                     .setScanMode(scanMode)
                     .build(),
                 callback,
             )
+            scanning = true
             _status.value = "스캔 중 · raw packet 기록 중"
         } catch (_: SecurityException) {
             _status.value = "Bluetooth scan 권한이 없어 시작하지 못했습니다"
+        } catch (_: IllegalStateException) {
+            _status.value = "Bluetooth 스캔을 시작하지 못했습니다"
         }
     }
 
     fun stop() {
-        if (!hasScanPermission()) return
+        if (!scanning || !hasScanPermission()) return
         try {
             adapter?.bluetoothLeScanner?.stopScan(callback)
+            scanning = false
             _status.value = "스캔 중지"
         } catch (_: SecurityException) {
             _status.value = "권한이 없어 스캔을 중지하지 못했습니다"

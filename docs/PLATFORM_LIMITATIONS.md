@@ -1,7 +1,7 @@
 # Platform limitations
 
-- Android는 백그라운드에서 무제한 BLE scan과 임의 시점의 다른 앱 위 UI를 보장하지 않는다. overlay 권한, foreground service 정책, Samsung 배터리 최적화에 따라 자동 팝업 동작이 달라질 수 있다.
-- AirPods의 L/R/Case 배터리 advertising packet은 모델/상태별 확인이 필요하다. 실측 자료가 없을 때 parser가 byte offset을 추측하지 않도록 했으며, 지원되지 않은 packet은 `NEEDS_DEVICE_VALIDATION`으로 남긴다.
-- 이 저장소의 제품 렌더는 자체 제작된 단순 Canvas placeholder다. Apple 내부 3D asset이나 웹 제품 사진을 번들하지 않는다.
-- Glance 위젯 갱신은 Android의 App Widget update 제한을 받는다. 앱이 실제로 관찰한 값을 DataStore에 저장한 뒤 widget refresh를 요청하는 방식으로 확장한다.
-- 화면이 꺼져 있거나 보안 화면 위에서 overlay를 표시하지 않는 것은 의도된 fallback이다.
+- Android는 Bluetooth 스캔 권한과 제조사별 배터리 최적화 정책의 영향을 받습니다. 설정에서 Bluetooth/Nearby devices 권한과 백그라운드 감지를 허용해야 합니다.
+- 다른 앱 위 자동 팝업은 오버레이 권한이 필요합니다. 권한이 없으면 앱 화면·알림·위젯에서 상태를 확인할 수 있습니다.
+- AirPods는 케이스를 열거나 상태가 바뀌는 순간에 광고 패킷을 내보내므로 첫 감지까지 몇 초가 걸릴 수 있습니다.
+- Android의 APK 설치 보안 때문에 업데이트 설치 마지막 단계에서 사용자 확인이 표시될 수 있습니다. 업데이트 APK는 최초 설치 APK와 같은 서명 키를 사용해야 합니다.
+- 모델별 배터리 필드가 광고되지 않는 경우 해당 값은 --로 표시합니다. 0%와 확인 불가를 구분합니다.

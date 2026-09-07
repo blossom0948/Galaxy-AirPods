@@ -15,6 +15,7 @@ import com.galaxyairpods.domain.model.AirPodsState
 import com.galaxyairpods.domain.model.DataConfidence
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 
 private val Context.airPodsPreferences by preferencesDataStore(name = "airpods_state")
@@ -23,6 +24,7 @@ class AirPodsDataStore(private val context: Context) {
     private object Keys {
         val deviceId = stringPreferencesKey("device_id")
         val model = stringPreferencesKey("model")
+        val modelOverride = stringPreferencesKey("model_override")
         val leftBattery = intPreferencesKey("left_battery")
         val rightBattery = intPreferencesKey("right_battery")
         val caseBattery = intPreferencesKey("case_battery")
@@ -86,7 +88,19 @@ class AirPodsDataStore(private val context: Context) {
 
     val backgroundDetection: Flow<Boolean> = context.airPodsPreferences.data
         .catch { emit(emptyPreferences()) }
-        .map { it[Keys.backgroundDetection] ?: false }
+        .map { it[Keys.backgroundDetection] ?: true }
+
+    val modelOverride: Flow<AirPodsModel?> = context.airPodsPreferences.data
+        .catch { emit(emptyPreferences()) }
+        .map { preferences ->
+            preferences[Keys.modelOverride]?.let { value ->
+                AirPodsModel.entries.firstOrNull { it.name == value }
+            }
+        }
+
+    val latestDisplayState: Flow<AirPodsState?> = combine(latestState, modelOverride) { state, override ->
+        state?.copy(model = override ?: state.model)
+    }
 
     suspend fun saveState(state: AirPodsState) {
         context.airPodsPreferences.edit { preferences ->
@@ -122,6 +136,13 @@ class AirPodsDataStore(private val context: Context) {
 
     suspend fun setBackgroundDetection(enabled: Boolean) {
         context.airPodsPreferences.edit { it[Keys.backgroundDetection] = enabled }
+    }
+
+    suspend fun setModelOverride(model: AirPodsModel?) {
+        context.airPodsPreferences.edit { preferences ->
+            if (model == null) preferences.remove(Keys.modelOverride)
+            else preferences[Keys.modelOverride] = model.name
+        }
     }
 }
 

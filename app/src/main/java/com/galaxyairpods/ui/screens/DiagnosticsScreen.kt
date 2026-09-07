@@ -28,7 +28,10 @@ import com.galaxyairpods.data.bluetooth.AirPodsBleScanner
 import com.galaxyairpods.permissions.PermissionManager
 
 @Composable
-fun DiagnosticsScreen(scanner: AirPodsBleScanner) {
+fun DiagnosticsScreen(
+    scanner: AirPodsBleScanner,
+    onStartScanning: () -> Unit,
+) {
     val records by scanner.records.collectAsStateWithLifecycle()
     val status by scanner.status.collectAsStateWithLifecycle()
     val clipboard = LocalClipboardManager.current
@@ -36,13 +39,13 @@ fun DiagnosticsScreen(scanner: AirPodsBleScanner) {
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { result ->
-        if (result.values.all { it }) scanner.start()
+        if (result.values.all { it }) onStartScanning()
     }
 
     Column(Modifier.padding(horizontal = 18.dp, vertical = 12.dp)) {
         Text("BLE Debug", style = MaterialTheme.typography.headlineMedium)
         Text(
-            "실제 패킷을 수집하고 parser 검증에 사용할 masked diagnostic을 확인합니다.",
+            "실제 수신 패킷을 확인합니다.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -63,7 +66,7 @@ fun DiagnosticsScreen(scanner: AirPodsBleScanner) {
             OutlinedButton(onClick = { saveDiagnostics(context, scanner.maskedJson()) }) { Text("Save JSON") }
         }
         Text(
-            "Apple manufacturer packet은 발견해도 아직 byte offset을 추측하지 않습니다. 결과에 NEEDS_DEVICE_VALIDATION이 표시됩니다.",
+            "수신된 Apple AirPods packet과 해석 결과가 아래에 표시됩니다.",
             modifier = Modifier.padding(vertical = 10.dp),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,

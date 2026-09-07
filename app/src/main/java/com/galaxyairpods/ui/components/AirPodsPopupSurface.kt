@@ -22,7 +22,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.Close
@@ -279,14 +278,6 @@ fun AirPodsPopupSurface(
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                }
-                if (popup.mode == com.galaxyairpods.domain.model.PopupMode.FIRST_PAIRING && popup.phase != PopupPhase.CONNECTED) {
-                    TextButton(
-                        onClick = { /* The real BLE connection request is wired after device validation. */ },
-                        modifier = Modifier.align(Alignment.CenterHorizontally),
-                    ) {
-                        Text("연결 준비")
-                    }
                 }
             }
         }

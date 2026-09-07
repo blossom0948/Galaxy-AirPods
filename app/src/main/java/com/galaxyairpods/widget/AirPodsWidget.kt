@@ -7,6 +7,7 @@ import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.glance.GlanceId
 import androidx.glance.GlanceModifier
 import androidx.glance.LocalSize
@@ -36,6 +37,7 @@ private object WidgetKeys {
     val left = intPreferencesKey("widget_left")
     val right = intPreferencesKey("widget_right")
     val case = intPreferencesKey("widget_case")
+    val model = stringPreferencesKey("widget_model")
 }
 
 class AirPodsWidget : GlanceAppWidget() {
@@ -54,33 +56,39 @@ class AirPodsWidget : GlanceAppWidget() {
             val left = preferences[WidgetKeys.left]
             val right = preferences[WidgetKeys.right]
             val caseBattery = preferences[WidgetKeys.case]
+            val modelLabel = preferences[WidgetKeys.model]
             when {
-                LocalSize.current.height <= 60.dp -> MinimalWidget(left, right, caseBattery)
-                LocalSize.current.width >= 220.dp -> VisualWidget(left, right, caseBattery)
-                else -> CompactWidget(left, right, caseBattery)
+                LocalSize.current.height <= 60.dp -> MinimalWidget(left, right, caseBattery, modelLabel)
+                LocalSize.current.width >= 220.dp -> VisualWidget(left, right, caseBattery, modelLabel)
+                else -> CompactWidget(left, right, caseBattery, modelLabel)
             }
         }
     }
 
     companion object {
-        suspend fun updateState(context: Context, left: Int?, right: Int?, caseBattery: Int?) {
-            updateAllAppWidgetState(context, left, right, caseBattery)
+        suspend fun updateState(
+            context: Context,
+            left: Int?,
+            right: Int?,
+            caseBattery: Int?,
+            modelLabel: String? = null,
+        ) {
+            updateAllAppWidgetState(context, left, right, caseBattery, modelLabel)
             AirPodsWidget().updateAll(context)
         }
     }
 }
 
 @Composable
-private fun CompactWidget(left: Int?, right: Int?, caseBattery: Int?) {
+private fun CompactWidget(left: Int?, right: Int?, caseBattery: Int?, modelLabel: String?) {
     WidgetColumn {
-        Text("AirPods Pro", style = whiteText)
-        Text("L ${left.percentOrDash()}   R ${right.percentOrDash()}", style = mintText)
-        Text("Case ${caseBattery.percentOrDash()}", style = mutedText)
+        Text(modelLabel ?: "AirPods", style = whiteText)
+        Text(batterySummary(modelLabel, left, right, caseBattery), style = mintText)
     }
 }
 
 @Composable
-private fun VisualWidget(left: Int?, right: Int?, caseBattery: Int?) {
+private fun VisualWidget(left: Int?, right: Int?, caseBattery: Int?, modelLabel: String?) {
     Row(
         modifier = GlanceModifier.fillMaxSize().background(panelColor).padding(14.dp),
         verticalAlignment = Alignment.Vertical.CenterVertically,
@@ -88,21 +96,21 @@ private fun VisualWidget(left: Int?, right: Int?, caseBattery: Int?) {
         Text("◉", style = TextStyle(color = ColorProvider(Color(0xFF9FE6D7))))
         Spacer(GlanceModifier.width(12.dp))
         WidgetColumn {
-            Text("AirPods Pro", style = whiteText)
-            Text("L ${left.percentOrDash()} · R ${right.percentOrDash()} · Case ${caseBattery.percentOrDash()}", style = mutedText)
+            Text(modelLabel ?: "AirPods", style = whiteText)
+            Text(batterySummary(modelLabel, left, right, caseBattery), style = mutedText)
         }
     }
 }
 
 @Composable
-private fun MinimalWidget(left: Int?, right: Int?, caseBattery: Int?) {
+private fun MinimalWidget(left: Int?, right: Int?, caseBattery: Int?, modelLabel: String?) {
     Row(
         modifier = GlanceModifier.fillMaxSize().background(panelColor).padding(horizontal = 12.dp),
         verticalAlignment = Alignment.Vertical.CenterVertically,
     ) {
         Text("🎧", style = whiteText)
         Spacer(GlanceModifier.width(8.dp))
-        Text("${left.percentOrDash()} / ${right.percentOrDash()}   Case ${caseBattery.percentOrDash()}", style = mintText)
+        Text(batterySummary(modelLabel, left, right, caseBattery), style = mintText)
     }
 }
 
@@ -122,17 +130,36 @@ private val mutedText = TextStyle(color = ColorProvider(Color(0xFFB8C0CC)))
 
 private fun Int?.percentOrDash(): String = this?.let { "$it%" } ?: "--"
 
+private fun batterySummary(
+    modelLabel: String?,
+    left: Int?,
+    right: Int?,
+    caseBattery: Int?,
+): String = if (modelLabel?.contains("Max") == true) {
+    "헤드폰 " + left.percentOrDash()
+} else {
+    "L " + left.percentOrDash() + " · R " + right.percentOrDash() +
+        " · Case " + caseBattery.percentOrDash()
+}
+
 class AirPodsWidgetReceiver : GlanceAppWidgetReceiver() {
     override val glanceAppWidget: GlanceAppWidget = AirPodsWidget()
 }
 
-private suspend fun updateAllAppWidgetState(context: Context, left: Int?, right: Int?, caseBattery: Int?) {
+private suspend fun updateAllAppWidgetState(
+    context: Context,
+    left: Int?,
+    right: Int?,
+    caseBattery: Int?,
+    modelLabel: String?,
+) {
     val manager = GlanceAppWidgetManager(context)
     manager.getGlanceIds(AirPodsWidget::class.java).forEach { glanceId ->
         updateAppWidgetState(context, glanceId) { preferences ->
             if (left == null) preferences.remove(WidgetKeys.left) else preferences[WidgetKeys.left] = left
             if (right == null) preferences.remove(WidgetKeys.right) else preferences[WidgetKeys.right] = right
             if (caseBattery == null) preferences.remove(WidgetKeys.case) else preferences[WidgetKeys.case] = caseBattery
+            if (modelLabel == null) preferences.remove(WidgetKeys.model) else preferences[WidgetKeys.model] = modelLabel
         }
     }
 }

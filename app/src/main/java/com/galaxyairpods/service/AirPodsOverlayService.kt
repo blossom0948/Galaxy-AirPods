@@ -79,7 +79,7 @@ class AirPodsOverlayService : LifecycleService() {
 @Composable
 private fun OverlayNotice(onClose: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    val state by AirPodsDataStore(context).latestState.collectAsState(initial = null)
+    val state by AirPodsDataStore(context).latestDisplayState.collectAsState(initial = null)
     Surface(
         modifier = Modifier.fillMaxWidth().padding(12.dp),
         shape = MaterialTheme.shapes.extraLarge,
@@ -93,7 +93,7 @@ private fun OverlayNotice(onClose: () -> Unit) {
                 Text("저장된 실측 상태가 없습니다.", color = MaterialTheme.colorScheme.onSurfaceVariant)
             } else {
                 Text(state!!.model.label, style = MaterialTheme.typography.titleLarge)
-                Text("다른 앱 위 상태 팝업", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("AirPods 배터리", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 ProductRenderer(state = state!!, openProgress = if (state!!.caseOpen == true) 1f else 0f)
                 BatteryGrid(state = state!!, modifier = Modifier.fillMaxWidth())
             }
