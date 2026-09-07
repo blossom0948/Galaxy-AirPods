@@ -94,8 +94,8 @@ fun BatteryItem(
     confidence: DataConfidence,
     reveal: Boolean,
     revealDelayMs: Long,
-    labelOverride: String? = null,
     modifier: Modifier = Modifier,
+    labelOverride: String? = null,
 ) {
     var itemVisible by remember { mutableStateOf(false) }
     LaunchedEffect(reveal, revealDelayMs) {

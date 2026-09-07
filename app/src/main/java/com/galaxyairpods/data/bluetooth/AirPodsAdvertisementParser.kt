@@ -6,12 +6,6 @@ import com.galaxyairpods.domain.model.DataConfidence
 import com.galaxyairpods.domain.model.ParsedAirPodsPacket
 import com.galaxyairpods.domain.model.isMax
 
-data class ParserMatch(
-    val matched: Boolean,
-    val parserName: String,
-    val resultLabel: String,
-)
-
 interface AirPodsPacketParser {
     val parserVersion: String
     fun canParse(scanResult: ScanResult): Boolean
@@ -24,7 +18,8 @@ interface AirPodsPacketParser {
  * Android exposes the Apple company identifier (0x004C) as the key of the
  * manufacturer-data map and the remaining bytes as the value. The value is a
  * Continuity message: [type, length, payload]. AirPods status broadcasts use
- * type 0x07 and a plaintext payload beginning with 0x01.
+ * type 0x07. The first payload byte varies between firmware generations
+ * (commonly 0x00, 0x01, or 0x07), so the stable model/status offsets are used.
  */
 class AppleAirPodsParser : AirPodsPacketParser {
     override val parserVersion: String = "apple-proximity-v1"
@@ -42,33 +37,12 @@ class AppleAirPodsParser : AirPodsPacketParser {
             ?.get(APPLE_COMPANY_ID)
             ?.let(::parseManufacturerData)
 
-    fun diagnosticMatch(scanResult: ScanResult): ParserMatch {
-        val parsed = parse(scanResult)
-        return if (parsed == null) {
-            ParserMatch(
-                matched = false,
-                parserName = parserVersion,
-                resultLabel = "Apple packet이지만 AirPods 상태 메시지가 아님",
-            )
-        } else {
-            ParserMatch(
-                matched = true,
-                parserName = parserVersion,
-                resultLabel = buildString {
-                    append(parsed.model.label)
-                    append(" · L ").append(parsed.leftBattery?.let { "$it%" } ?: "--")
-                    append(" · R ").append(parsed.rightBattery?.let { "$it%" } ?: "--")
-                    append(" · Case ").append(parsed.caseBattery?.let { "$it%" } ?: "--")
-                },
-            )
-        }
-    }
-
     companion object {
         const val APPLE_COMPANY_ID = 0x004C
 
         private const val PROXIMITY_MESSAGE_TYPE = 0x07
         private const val PLAINTEXT_STATUS_PREFIX = 0x01
+        private const val PAIRING_MODE_PREFIX = 0x00
 
         private val MODEL_CODES = mapOf(
             0x0220 to AirPodsModel.AIRPODS_GEN1,
@@ -99,7 +73,10 @@ class AppleAirPodsParser : AirPodsPacketParser {
 
                 if (type == PROXIMITY_MESSAGE_TYPE && length >= 9) {
                     val payload = bytes.copyOfRange(payloadStart, payloadEnd)
-                    if (payload[0].u8() == PLAINTEXT_STATUS_PREFIX) {
+                    if (payload[0].u8() == PLAINTEXT_STATUS_PREFIX ||
+                        payload[0].u8() == PROXIMITY_MESSAGE_TYPE ||
+                        payload[0].u8() == PAIRING_MODE_PREFIX
+                    ) {
                         return decodePayload(payload)
                     }
                 }
@@ -109,7 +86,7 @@ class AppleAirPodsParser : AirPodsPacketParser {
         }
 
         private fun decodePayload(payload: ByteArray): ParsedAirPodsPacket? {
-            if (payload.size < 9 || payload[0].u8() != PLAINTEXT_STATUS_PREFIX) return null
+            if (payload.size < 9) return null
 
             val modelCode = (payload[1].u8() shl 8) or payload[2].u8()
             val model = MODEL_CODES[modelCode] ?: AirPodsModel.AIRPODS
@@ -205,16 +182,6 @@ class AppleAirPodsParser : AirPodsPacketParser {
 class AirPodsParserRegistry(
     private val parsers: List<AirPodsPacketParser> = listOf(AppleAirPodsParser()),
 ) {
-    fun match(scanResult: ScanResult): ParserMatch {
-        val parser = parsers.firstOrNull { it.canParse(scanResult) }
-            ?: return ParserMatch(false, "none", "지원하는 AirPods packet 없음")
-        return if (parser is AppleAirPodsParser) {
-            parser.diagnosticMatch(scanResult)
-        } else {
-            ParserMatch(true, parser.parserVersion, "Parser matched")
-        }
-    }
-
     fun parse(scanResult: ScanResult): ParsedAirPodsPacket? =
         parsers.firstOrNull { it.canParse(scanResult) }?.parse(scanResult)
 }

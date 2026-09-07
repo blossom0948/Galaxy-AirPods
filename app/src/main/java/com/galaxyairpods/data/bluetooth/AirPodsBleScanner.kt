@@ -1,54 +1,34 @@
 package com.galaxyairpods.data.bluetooth
 
-import android.annotation.SuppressLint
 import android.Manifest
+import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothManager
+import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.content.pm.PackageManager
+import android.os.Build
 import androidx.core.content.ContextCompat
-import com.galaxyairpods.domain.model.AirPodsState
+import com.galaxyairpods.domain.model.AirPodsModel
 import com.galaxyairpods.domain.model.ParsedAirPodsPacket
-import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import java.util.Locale
-
-data class BleDiagnosticRecord(
-    val timestamp: Long,
-    val name: String,
-    val address: String,
-    val rssi: Int,
-    val manufacturerId: Int?,
-    val manufacturerHex: String,
-    val serviceUuids: List<String>,
-    val rawAdvertisingHex: String,
-    val parserName: String,
-    val parserResult: String,
-) {
-    fun toDiagnosticJson(): String = buildString {
-        append("{")
-        append("\"timestamp\":").append(timestamp).append(",")
-        append("\"name\":\"").append(name.jsonEscape()).append("\",")
-        append("\"address\":\"").append(address.jsonEscape()).append("\",")
-        append("\"rssi\":").append(rssi).append(",")
-        append("\"manufacturerId\":").append(manufacturerId ?: "null").append(",")
-        append("\"manufacturerHex\":\"").append(manufacturerHex).append("\",")
-        append("\"serviceUuids\":[")
-        append(serviceUuids.joinToString(",") { "\"${it.jsonEscape()}\"" })
-        append("],")
-        append("\"rawAdvertisingHex\":\"").append(rawAdvertisingHex).append("\",")
-        append("\"parserName\":\"").append(parserName.jsonEscape()).append("\",")
-        append("\"parserResult\":\"").append(parserResult.jsonEscape()).append("\"")
-        append("}")
-    }
-}
 
 data class ValidatedPacketEvent(
     val deviceId: String,
@@ -56,20 +36,52 @@ data class ValidatedPacketEvent(
     val seenAt: Long,
 )
 
-class AirPodsBleScanner(private val context: Context) {
-    private val _records = MutableStateFlow<List<BleDiagnosticRecord>>(emptyList())
-    val records: StateFlow<List<BleDiagnosticRecord>> = _records.asStateFlow()
+data class BluetoothAirPodsEvent(
+    val deviceId: String,
+    val deviceName: String,
+    val model: AirPodsModel,
+    val connected: Boolean,
+    val seenAt: Long,
+)
 
+class AirPodsBleScanner(private val context: Context) {
     private val _status = MutableStateFlow("스캔 대기")
     val status: StateFlow<String> = _status.asStateFlow()
 
     private val _validatedPackets = MutableSharedFlow<ValidatedPacketEvent>(extraBufferCapacity = 16)
     val validatedPackets: SharedFlow<ValidatedPacketEvent> = _validatedPackets.asSharedFlow()
 
+    private val _bluetoothEvents = MutableSharedFlow<BluetoothAirPodsEvent>(replay = 1, extraBufferCapacity = 8)
+    val bluetoothEvents: SharedFlow<BluetoothAirPodsEvent> = _bluetoothEvents.asSharedFlow()
+
     private val parserRegistry = AirPodsParserRegistry()
+    private val monitorScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var scanning = false
+    private var connectionMonitorJob: Job? = null
+    private var lastBluetoothEvent: BluetoothAirPodsEvent? = null
+    private var profileProxiesRequested = false
+    private val profileProxies = mutableMapOf<Int, BluetoothProfile>()
+    private val bluetoothManager: BluetoothManager? by lazy {
+        context.getSystemService(BluetoothManager::class.java)
+    }
     private val adapter: BluetoothAdapter? by lazy {
-        context.getSystemService(BluetoothManager::class.java)?.adapter
+        bluetoothManager?.adapter
+    }
+
+    private val profileListener = object : BluetoothProfile.ServiceListener {
+        override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
+            synchronized(profileProxies) {
+                if (connectionMonitorJob?.isActive == true) {
+                    profileProxies[profile] = proxy
+                }
+            }
+        }
+
+        override fun onServiceDisconnected(profile: Int) {
+            synchronized(profileProxies) {
+                profileProxies.remove(profile)
+            }
+        }
     }
 
     private val callback = object : ScanCallback() {
@@ -88,24 +100,31 @@ class AirPodsBleScanner(private val context: Context) {
     }
 
     fun start(scanMode: Int = ScanSettings.SCAN_MODE_LOW_LATENCY) {
-        if (scanning) return
-        if (!hasScanPermission()) {
+        if (!hasConnectPermission()) {
             _status.value = "Bluetooth/Nearby devices 권한이 필요합니다"
             return
         }
         val bluetoothAdapter = adapter
         if (bluetoothAdapter == null) {
-            _status.value = "이 기기는 Bluetooth LE를 지원하지 않습니다"
+            _status.value = "이 기기에서 Bluetooth를 사용할 수 없습니다"
             return
         }
         if (!bluetoothAdapter.isEnabled) {
             _status.value = "Bluetooth가 꺼져 있습니다"
             return
         }
+
+        startConnectionMonitor()
+        if (scanning) return
+        if (!hasScanPermission()) {
+            _status.value = "BLE 검색 권한이 없어 연결 상태만 확인합니다"
+            return
+        }
+
         try {
             val scanner = bluetoothAdapter.bluetoothLeScanner
             if (scanner == null) {
-                _status.value = "Bluetooth LE 스캐너를 사용할 수 없습니다"
+                _status.value = "BLE 스캐너를 사용할 수 없어 Bluetooth 연결만 확인합니다"
                 return
             }
             scanner.startScan(
@@ -116,7 +135,7 @@ class AirPodsBleScanner(private val context: Context) {
                 callback,
             )
             scanning = true
-            _status.value = "스캔 중 · raw packet 기록 중"
+            _status.value = "AirPods 연결 상태 확인 중"
         } catch (_: SecurityException) {
             _status.value = "Bluetooth scan 권한이 없어 시작하지 못했습니다"
         } catch (_: IllegalStateException) {
@@ -125,30 +144,24 @@ class AirPodsBleScanner(private val context: Context) {
     }
 
     fun stop() {
-        if (!scanning || !hasScanPermission()) return
-        try {
-            adapter?.bluetoothLeScanner?.stopScan(callback)
-            scanning = false
-            _status.value = "스캔 중지"
-        } catch (_: SecurityException) {
-            _status.value = "권한이 없어 스캔을 중지하지 못했습니다"
+        if (scanning && hasScanPermission()) {
+            try {
+                adapter?.bluetoothLeScanner?.stopScan(callback)
+            } catch (_: SecurityException) {
+                _status.value = "권한이 없어 BLE 검색을 중지하지 못했습니다"
+            }
         }
-    }
-
-    fun clear() {
-        _records.value = emptyList()
-        _status.value = "기록 삭제됨"
-    }
-
-    fun maskedJson(): String = _records.value.joinToString(prefix = "[", postfix = "]") {
-        it.toDiagnosticJson()
+        scanning = false
+        connectionMonitorJob?.cancel()
+        connectionMonitorJob = null
+        lastBluetoothEvent = null
+        closeProfileProxies()
+        _status.value = "검색 중지"
     }
 
     private fun append(result: ScanResult) {
-        val record = result.toDiagnosticRecord(parserRegistry.match(result))
-        _records.value = (_records.value + record).takeLast(MAX_RECORDS)
-        _status.value = "${_records.value.size}개 packet 기록됨"
         parserRegistry.parse(result)?.let { parsed ->
+            _status.value = "AirPods 신호 감지됨"
             _validatedPackets.tryEmit(
                 ValidatedPacketEvent(
                     deviceId = runCatching { result.device.address }.getOrDefault("unknown"),
@@ -156,11 +169,142 @@ class AirPodsBleScanner(private val context: Context) {
                     seenAt = System.currentTimeMillis(),
                 ),
             )
+        } ?: run {
+            if (lastBluetoothEvent == null) _status.value = "AirPods 연결 상태 확인 중"
         }
     }
 
+    private fun startConnectionMonitor() {
+        if (connectionMonitorJob?.isActive == true) return
+        connectionMonitorJob = monitorScope.launch {
+            while (isActive) {
+                refreshBluetoothConnection()
+                delay(CONNECTION_POLL_MS)
+            }
+        }
+        requestProfileProxies()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun requestProfileProxies() {
+        if (profileProxiesRequested || !hasConnectPermission()) return
+        val bluetoothAdapter = adapter ?: return
+        profileProxiesRequested = true
+        PROFILE_PROXY_IDS.forEach { profile ->
+            runCatching {
+                bluetoothAdapter.getProfileProxy(context, profileListener, profile)
+            }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun refreshBluetoothConnection() {
+        if (!hasConnectPermission()) return
+        val bluetoothAdapter = adapter ?: return
+        if (!bluetoothAdapter.isEnabled) {
+            publishDisconnectedEvent()
+            _status.value = "Bluetooth가 꺼져 있습니다"
+            return
+        }
+
+        val connectedDevices = buildList {
+            runCatching {
+                addAll(bluetoothManager?.getConnectedDevices(BluetoothProfile.GATT).orEmpty())
+            }
+            val proxies = synchronized(profileProxies) { profileProxies.values.toList() }
+            proxies.forEach { profile ->
+                runCatching { addAll(profile.connectedDevices) }
+            }
+        }
+            .associateBy { it.address }
+        val bondedDevices = runCatching { bluetoothAdapter.bondedDevices }
+            .getOrDefault(emptySet())
+
+        val candidates = (bondedDevices + connectedDevices.values)
+            .distinctBy { it.address }
+            .mapNotNull { device ->
+                val remoteName = device.remoteName()
+                val alias = device.localAlias()
+                val names = listOf(remoteName, alias).filter { it.isNotBlank() }
+                if (names.isEmpty() || !looksLikeAirPods(device, names)) {
+                    return@mapNotNull null
+                }
+                BluetoothAirPodsEvent(
+                    deviceId = device.address,
+                    deviceName = alias.ifBlank { remoteName },
+                    model = modelFromName(names.joinToString(" ")),
+                    connected = connectedDevices.containsKey(device.address),
+                    seenAt = System.currentTimeMillis(),
+                )
+            }
+            .sortedWith(compareByDescending<BluetoothAirPodsEvent> { it.connected }.thenBy { it.deviceId })
+
+        val current = candidates.firstOrNull()
+        val previous = lastBluetoothEvent
+        if (current == null) {
+            publishDisconnectedEvent()
+            _status.value = "AirPods 연결 대기"
+            return
+        }
+        lastBluetoothEvent = current
+
+        _status.value = if (current.connected) {
+            "AirPods Bluetooth 연결됨"
+        } else {
+            "AirPods 페어링됨 · 연결 대기"
+        }
+
+        val changed = previous == null ||
+            previous.deviceId != current.deviceId ||
+            previous.connected != current.connected ||
+            previous.model != current.model ||
+            current.seenAt - previous.seenAt >= EVENT_REFRESH_MS
+        if (changed) _bluetoothEvents.tryEmit(current)
+    }
+
+    private fun publishDisconnectedEvent() {
+        val previous = lastBluetoothEvent ?: return
+        if (!previous.connected) return
+        val disconnected = previous.copy(
+            connected = false,
+            seenAt = System.currentTimeMillis(),
+        )
+        lastBluetoothEvent = disconnected
+        _bluetoothEvents.tryEmit(disconnected)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun BluetoothDevice.localAlias(): String = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        runCatching { alias }.getOrNull().orEmpty()
+    } else {
+        ""
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun BluetoothDevice.remoteName(): String = runCatching { name }.getOrNull().orEmpty()
+
+    @SuppressLint("MissingPermission")
+    private fun looksLikeAirPods(device: BluetoothDevice, names: List<String>): Boolean {
+        if (names.any { it.lowercase(Locale.US).replace("-", " ").contains("airpod") }) return true
+        return device.bluetoothClass?.majorDeviceClass == android.bluetooth.BluetoothClass.Device.Major.AUDIO_VIDEO &&
+            names.any { it.lowercase(Locale.US).contains("apple") }
+    }
+
+    private fun modelFromName(name: String): AirPodsModel {
+        return AirPodsModel.fromBluetoothName(name)
+    }
+
+    private fun hasConnectPermission(): Boolean =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) ==
+                PackageManager.PERMISSION_GRANTED
+        } else {
+            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH) ==
+                PackageManager.PERMISSION_GRANTED
+        }
+
     private fun hasScanPermission(): Boolean =
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
                 ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
         } else {
@@ -169,41 +313,25 @@ class AirPodsBleScanner(private val context: Context) {
         }
 
     companion object {
-        private const val MAX_RECORDS = 250
-    }
-}
-
-@SuppressLint("MissingPermission")
-private fun ScanResult.toDiagnosticRecord(parserMatch: ParserMatch): BleDiagnosticRecord {
-    val scanRecord = scanRecord
-    val manufacturers = scanRecord?.manufacturerSpecificData
-    val firstManufacturerIndex = manufacturers?.let { if (it.size() > 0) 0 else null }
-    val manufacturerId = firstManufacturerIndex?.let { manufacturers.keyAt(it) }
-    val manufacturerBytes = firstManufacturerIndex?.let { manufacturers.valueAt(it) }
-    val serviceUuids = scanRecord?.serviceUuids?.map { it.uuid.toString() }.orEmpty()
-    val raw = scanRecord?.bytes?.toHex().orEmpty()
-    return BleDiagnosticRecord(
-        timestamp = System.currentTimeMillis(),
-        name = runCatching { device.name }.getOrNull().orEmpty().ifBlank { "Unnamed device" },
-        address = device.address.maskAddress(),
-        rssi = rssi,
-        manufacturerId = manufacturerId,
-        manufacturerHex = manufacturerBytes?.toHex().orEmpty(),
-        serviceUuids = serviceUuids,
-        rawAdvertisingHex = raw,
-        parserName = parserMatch.parserName,
-        parserResult = parserMatch.resultLabel,
-    )
-}
-
-private fun ByteArray.toHex(): String = joinToString("") { "%02X".format(Locale.US, it.toInt() and 0xFF) }
-
-private fun String.maskAddress(): String =
-    if (count { it == ':' } == 5) {
-        split(":").take(3).joinToString(":") + ":**:**:**"
-    } else {
-        "masked"
+        private const val CONNECTION_POLL_MS = 1_500L
+        private const val EVENT_REFRESH_MS = 30_000L
+        private val PROFILE_PROXY_IDS = buildList {
+            add(BluetoothProfile.A2DP)
+            add(BluetoothProfile.HEADSET)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) add(BluetoothProfile.LE_AUDIO)
+        }
     }
 
-private fun String.jsonEscape(): String =
-    replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
+    @SuppressLint("MissingPermission")
+    private fun closeProfileProxies() {
+        val proxies = synchronized(profileProxies) {
+            val copy = profileProxies.toMap()
+            profileProxies.clear()
+            copy
+        }
+        proxies.forEach { (profile, proxy) ->
+            runCatching { adapter?.closeProfileProxy(profile, proxy) }
+        }
+        profileProxiesRequested = false
+    }
+}

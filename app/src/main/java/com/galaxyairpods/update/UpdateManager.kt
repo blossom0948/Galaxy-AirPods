@@ -80,9 +80,7 @@ class UpdateManager(private val context: Context) {
     }
 
     private fun install(file: File) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-            !context.packageManager.canRequestPackageInstalls()
-        ) {
+        if (!context.packageManager.canRequestPackageInstalls()) {
             val settingsIntent = Intent(
                 Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                 Uri.parse("package:${context.packageName}"),
@@ -186,12 +184,7 @@ class UpdateManager(private val context: Context) {
         if (packageInfo.packageName != context.packageName) {
             error("다른 앱의 APK가 다운로드되었습니다")
         }
-        val downloadedVersionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            packageInfo.longVersionCode
-        } else {
-            @Suppress("DEPRECATION")
-            packageInfo.versionCode.toLong()
-        }
+        val downloadedVersionCode = packageInfo.longVersionCode
         if (downloadedVersionCode != info.versionCode.toLong()) {
             error("다운로드된 APK 버전이 업데이트 정보와 다릅니다")
         }
@@ -230,9 +223,13 @@ class UpdateManager(private val context: Context) {
         connectTimeout = 10_000
         readTimeout = 15_000
         setRequestProperty("User-Agent", "AirPodsGalaxy/${BuildConfig.VERSION_NAME}")
-        connect()
-        if (responseCode !in 200..299) error("HTTP $responseCode")
-        return block()
+        return try {
+            connect()
+            if (responseCode !in 200..299) error("HTTP $responseCode")
+            block()
+        } finally {
+            disconnect()
+        }
     }
 
     companion object {

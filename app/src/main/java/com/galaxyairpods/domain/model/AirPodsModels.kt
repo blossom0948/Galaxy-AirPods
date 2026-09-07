@@ -1,5 +1,7 @@
 package com.galaxyairpods.domain.model
 
+import java.util.Locale
+
 enum class AirPodsModel(val label: String) {
     AIRPODS_GEN1("AirPods (1세대)"),
     AIRPODS_GEN2("AirPods (2세대)"),
@@ -14,7 +16,30 @@ enum class AirPodsModel(val label: String) {
     AIRPODS_MAX_USBC("AirPods Max (USB-C)"),
     AIRPODS_MAX2("AirPods Max (2세대)"),
     AIRPODS("AirPods"),
-    UNKNOWN("AirPods"),
+    UNKNOWN("AirPods");
+
+    companion object {
+        fun fromBluetoothName(name: String): AirPodsModel {
+            val normalized = name.lowercase(Locale.US).replace("-", " ")
+            return when {
+                normalized.contains("max") && normalized.contains("2") -> AIRPODS_MAX2
+                normalized.contains("max") && (normalized.contains("usb") || normalized.contains("usbc")) ->
+                    AIRPODS_MAX_USBC
+                normalized.contains("max") -> AIRPODS_MAX
+                normalized.contains("pro") && normalized.contains("3") -> AIRPODS_PRO3
+                normalized.contains("pro") && normalized.contains("2") &&
+                    (normalized.contains("usb") || normalized.contains("usbc")) -> AIRPODS_PRO2_USBC
+                normalized.contains("pro") && normalized.contains("2") -> AIRPODS_PRO2
+                normalized.contains("pro") -> AIRPODS_PRO
+                normalized.contains("4") && normalized.contains("anc") -> AIRPODS_GEN4_ANC
+                normalized.contains("4") -> AIRPODS_GEN4
+                normalized.contains("3") -> AIRPODS_GEN3
+                normalized.contains("2") -> AIRPODS_GEN2
+                normalized.contains("1") -> AIRPODS_GEN1
+                else -> AIRPODS
+            }
+        }
+    }
 }
 
 val AirPodsModel.isMax: Boolean
@@ -52,6 +77,7 @@ data class AirPodsState(
     val caseOpen: Boolean? = null,
     val connected: Boolean = false,
     val detected: Boolean = false,
+    val deviceName: String? = null,
     val lastSeenAt: Long? = null,
     val confidence: DataConfidence = DataConfidence.UNKNOWN,
 ) {
@@ -64,7 +90,7 @@ data class AirPodsState(
     val connectionLabel: String
         get() = when {
             connected -> "연결됨"
-            detected -> "감지됨"
+            detected -> "페어링됨 · 연결 대기"
             else -> "연결 대기"
         }
 

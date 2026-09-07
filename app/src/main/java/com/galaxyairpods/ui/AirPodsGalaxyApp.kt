@@ -18,14 +18,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.galaxyairpods.design.AirPodsGalaxyTheme
 import com.galaxyairpods.ui.components.AirPodsPopupSurface
-import com.galaxyairpods.ui.screens.DiagnosticsScreen
 import com.galaxyairpods.ui.screens.HomeScreen
 import com.galaxyairpods.ui.screens.SettingsScreen
 import com.galaxyairpods.update.UpdateState
 
 private enum class AppDestination(val label: String, val glyph: String) {
     HOME("홈", "⌂"),
-    DEBUG("진단", "◌"),
     SETTINGS("설정", "⚙"),
 }
 
@@ -36,7 +34,8 @@ fun AirPodsGalaxyApp(viewModel: AppViewModel = viewModel()) {
     var reducedMotion by rememberSaveable {
         mutableStateOf(AccessibilityMotion.systemRequestsReducedMotion(context))
     }
-    val destination = AppDestination.valueOf(destinationName)
+    val destination = AppDestination.entries.firstOrNull { it.name == destinationName }
+        ?: AppDestination.HOME
     val airPodsState by viewModel.airPodsState.collectAsStateWithLifecycle()
     val popupState by viewModel.popupState.collectAsStateWithLifecycle()
     val autoPopup by viewModel.autoPopup.collectAsStateWithLifecycle()
@@ -70,13 +69,7 @@ fun AirPodsGalaxyApp(viewModel: AppViewModel = viewModel()) {
                         state = airPodsState,
                         scanStatus = scanStatus,
                         onStartScanning = viewModel::startScanning,
-                        onOpenDiagnostics = { destinationName = AppDestination.DEBUG.name },
                         onOpenSettings = { destinationName = AppDestination.SETTINGS.name },
-                    )
-
-                    AppDestination.DEBUG -> DiagnosticsScreen(
-                        scanner = viewModel.scanner,
-                        onStartScanning = viewModel::startScanning,
                     )
 
                     AppDestination.SETTINGS -> SettingsScreen(

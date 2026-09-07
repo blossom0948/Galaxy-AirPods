@@ -2,7 +2,6 @@ package com.galaxyairpods.ui
 
 import android.app.Application
 import android.content.Intent
-import android.os.Build
 import android.provider.Settings
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -116,6 +115,30 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         viewModelScope.launch {
+            scanner.bluetoothEvents.collect { event ->
+                val previous = liveRepository.state.value
+                liveRepository.applyBluetoothConnection(event)
+                val current = liveRepository.state.value
+                val displayState = current.copy(model = modelOverride.value ?: current.model)
+
+                AirPodsWidget.updateState(
+                    context = getApplication(),
+                    left = current.leftBattery,
+                    right = current.rightBattery,
+                    caseBattery = current.caseBattery,
+                    modelLabel = displayState.model.label,
+                )
+
+                if (event.connected && shouldShowPopup(previous, current, null)) {
+                    if (popupController.state.value.isVisible) {
+                        popupController.dispatch(PopupEvent.BatteryUpdated(displayState))
+                    } else {
+                        popupController.show(displayState)
+                    }
+                }
+            }
+        }
+        viewModelScope.launch {
             dataStore.backgroundDetection.collect { enabled ->
                 if (enabled) startBackgroundServiceIfReady() else stopBackgroundService()
             }
@@ -209,11 +232,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (!PermissionManager.allGranted(context, PermissionManager.bluetoothPermissions())) return
         val intent = Intent(context, AirPodsMonitorService::class.java)
         runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
-            }
+            context.startForegroundService(intent)
         }
     }
 
