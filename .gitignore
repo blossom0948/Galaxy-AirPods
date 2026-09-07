@@ -1,0 +1,18 @@
+# Gradle
+.gradle/
+**/build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Android Studio
+.idea/
+*.iml
+/local.properties
+.DS_Store
+
+# Generated runtime diagnostics
+*.apk
+*.aab
+/diagnostics/
+
+# Local motion candidates
+/app/src/main/assets/motion-candidates/

@@ -1,0 +1,121 @@
+package com.galaxyairpods.ui
+
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.galaxyairpods.design.AirPodsGalaxyTheme
+import com.galaxyairpods.ui.components.AirPodsPopupSurface
+import com.galaxyairpods.ui.screens.DiagnosticsScreen
+import com.galaxyairpods.ui.screens.HomeScreen
+import com.galaxyairpods.ui.screens.SettingsScreen
+import com.galaxyairpods.update.UpdateState
+
+private enum class AppDestination(val label: String, val glyph: String) {
+    HOME("홈", "⌂"),
+    DEBUG("진단", "◌"),
+    SETTINGS("설정", "⚙"),
+}
+
+@Composable
+fun AirPodsGalaxyApp(viewModel: AppViewModel = viewModel()) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var destinationName by rememberSaveable { mutableStateOf(AppDestination.HOME.name) }
+    var reducedMotion by rememberSaveable {
+        mutableStateOf(AccessibilityMotion.systemRequestsReducedMotion(context))
+    }
+    val destination = AppDestination.valueOf(destinationName)
+    val airPodsState by viewModel.airPodsState.collectAsStateWithLifecycle()
+    val popupState by viewModel.popupState.collectAsStateWithLifecycle()
+    val autoPopup by viewModel.autoPopup.collectAsStateWithLifecycle()
+    val showOnCaseOpen by viewModel.showOnCaseOpen.collectAsStateWithLifecycle()
+    val popupDuration by viewModel.popupDuration.collectAsStateWithLifecycle()
+    val backgroundDetection by viewModel.backgroundDetection.collectAsStateWithLifecycle()
+    val modelOverride by viewModel.modelOverride.collectAsStateWithLifecycle()
+    val scanStatus by viewModel.scanStatus.collectAsStateWithLifecycle()
+    val updateState by viewModel.updateState.collectAsStateWithLifecycle()
+
+    LaunchedEffect(Unit) { viewModel.startScanning() }
+
+    AirPodsGalaxyTheme {
+        Scaffold(
+            bottomBar = {
+                NavigationBar {
+                    AppDestination.entries.forEach { item ->
+                        NavigationBarItem(
+                            selected = destination == item,
+                            onClick = { destinationName = item.name },
+                            icon = { Text(item.glyph) },
+                            label = { Text(item.label) },
+                        )
+                    }
+                }
+            },
+        ) { paddingValues ->
+            Box(Modifier.padding(paddingValues)) {
+                when (destination) {
+                    AppDestination.HOME -> HomeScreen(
+                        state = airPodsState,
+                        scanStatus = scanStatus,
+                        onStartScanning = viewModel::startScanning,
+                        onOpenDiagnostics = { destinationName = AppDestination.DEBUG.name },
+                        onOpenSettings = { destinationName = AppDestination.SETTINGS.name },
+                    )
+
+                    AppDestination.DEBUG -> DiagnosticsScreen(
+                        scanner = viewModel.scanner,
+                        onStartScanning = viewModel::startScanning,
+                    )
+
+                    AppDestination.SETTINGS -> SettingsScreen(
+                        autoPopup = autoPopup,
+                        showOnCaseOpen = showOnCaseOpen,
+                        popupDuration = popupDuration,
+                        backgroundDetection = backgroundDetection,
+                        modelOverride = modelOverride,
+                        reducedMotion = reducedMotion,
+                        onAutoPopupChange = viewModel::setAutoPopup,
+                        onCaseOpenChange = viewModel::setShowOnCaseOpen,
+                        onPopupDurationChange = viewModel::setPopupDuration,
+                        onBackgroundDetectionChange = viewModel::setBackgroundDetection,
+                        onModelOverrideChange = viewModel::setModelOverride,
+                        onTestOverlay = viewModel::testOverlay,
+                        onReducedMotionChange = { reducedMotion = it },
+                        onStartScanning = viewModel::startScanning,
+                        updateState = updateState,
+                        onCheckForUpdates = viewModel::checkForUpdates,
+                        onInstallUpdate = viewModel::installUpdate,
+                        onInstallReady = viewModel::installReadyUpdate,
+                    )
+                }
+            }
+        }
+
+        if (popupState.isVisible) {
+            BackHandler(enabled = true) { viewModel.dismissPopup() }
+            AirPodsPopupSurface(
+                popup = popupState,
+                settings = viewModel.motionSettings,
+                popupDurationSeconds = popupDuration,
+                reducedMotion = reducedMotion,
+                onDismiss = viewModel::dismissPopup,
+                onHide = viewModel::hidePopup,
+                onBatteryVisible = viewModel::markPopupBatteryVisible,
+                onIdle = viewModel::markPopupIdle,
+                onDraggingChanged = viewModel.popupController::setDragging,
+            )
+        }
+    }
+}
