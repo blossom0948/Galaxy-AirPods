@@ -58,6 +58,10 @@ class UpdateManager(context: Context) {
 
         mutex.withLock {
             if (context.packageManager.canRequestPackageInstalls()) {
+                // A blocked update becomes eligible again after the user grants
+                // this permission. Keep the attempt timestamp so an install
+                // session that is already waiting for confirmation is not started
+                // again on every automatic check.
                 preferences.edit().remove(BLOCKED_VERSION_KEY).apply()
             }
 
@@ -69,13 +73,21 @@ class UpdateManager(context: Context) {
                 }
             }.onSuccess { info ->
                 if (info.versionCode <= BuildConfig.VERSION_CODE) {
-                    preferences.edit().remove(ATTEMPTED_VERSION_KEY).apply()
+                    preferences.edit()
+                        .remove(ATTEMPTED_VERSION_KEY)
+                        .remove(ATTEMPTED_AT_KEY)
+                        .remove(BLOCKED_VERSION_KEY)
+                        .apply()
                     _state.value = UpdateState.UpToDate
                 } else {
                     _state.value = UpdateState.Available(info)
                     val attempted = preferences.getInt(ATTEMPTED_VERSION_KEY, -1)
+                    val attemptedAt = preferences.getLong(ATTEMPTED_AT_KEY, 0L)
                     val blocked = preferences.getInt(BLOCKED_VERSION_KEY, -1)
-                    if (automatic && attempted != info.versionCode && blocked != info.versionCode) {
+                    val retryAllowed = attempted != info.versionCode ||
+                        attemptedAt == 0L ||
+                        System.currentTimeMillis() - attemptedAt >= AUTO_RETRY_COOLDOWN_MS
+                    if (automatic && blocked != info.versionCode && retryAllowed) {
                         downloadAndInstallLocked(info)
                     }
                 }
@@ -87,12 +99,14 @@ class UpdateManager(context: Context) {
 
     suspend fun downloadAndInstall(info: UpdateInfo) {
         mutex.withLock {
-            runCatching {
-                val file = downloadAndPrepare(info)
-                _state.value = UpdateState.Ready(info, file)
-            }.onFailure {
-                _state.value = UpdateState.Error("업데이트 파일을 받을 수 없습니다")
-            }
+            // Manual retry must always be available, even after an interrupted
+            // automatic attempt left a persisted guard behind.
+            preferences.edit()
+                .remove(ATTEMPTED_VERSION_KEY)
+                .remove(ATTEMPTED_AT_KEY)
+                .remove(BLOCKED_VERSION_KEY)
+                .apply()
+            downloadAndInstallLocked(info)
         }
     }
 
@@ -174,6 +188,7 @@ class UpdateManager(context: Context) {
                 session.commit(statusIntent.intentSender)
                 preferences.edit()
                     .putInt(ATTEMPTED_VERSION_KEY, info.versionCode)
+                    .putLong(ATTEMPTED_AT_KEY, System.currentTimeMillis())
                     .remove(BLOCKED_VERSION_KEY)
                     .apply()
                 _state.value = UpdateState.Installing(info)
@@ -294,9 +309,11 @@ class UpdateManager(context: Context) {
     companion object {
         private const val PREFERENCES_NAME = "update_state"
         private const val ATTEMPTED_VERSION_KEY = "attempted_version"
+        private const val ATTEMPTED_AT_KEY = "attempted_at"
         private const val BLOCKED_VERSION_KEY = "blocked_version"
         private const val MANIFEST_CACHE_BUCKET_MS = 5 * 60 * 1000L
         private const val AUTO_CHECK_INTERVAL_MS = 30 * 60 * 1000L
+        private const val AUTO_RETRY_COOLDOWN_MS = 60 * 60 * 1000L
         private const val MANIFEST_URL =
             "https://raw.githubusercontent.com/blossom0948/Galaxy-AirPods/main/update.json"
 

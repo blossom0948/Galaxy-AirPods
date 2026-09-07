@@ -24,6 +24,7 @@ class UpdateInstallReceiver : BroadcastReceiver() {
                 context.getSharedPreferences("update_state", Context.MODE_PRIVATE)
                     .edit()
                     .remove("attempted_version")
+                    .remove("attempted_at")
                     .remove("blocked_version")
                     .apply()
                 UpdateNotifications.cancel(context)
@@ -37,6 +38,8 @@ class UpdateInstallReceiver : BroadcastReceiver() {
                 context.getSharedPreferences("update_state", Context.MODE_PRIVATE)
                     .edit()
                     .remove("attempted_version")
+                    .remove("attempted_at")
+                    .remove("blocked_version")
                     .apply()
                 val message = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)
                     ?.takeIf { it.isNotBlank() }

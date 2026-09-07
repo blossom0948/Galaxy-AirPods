@@ -20,6 +20,7 @@ import com.galaxyairpods.permissions.PermissionManager
 import com.galaxyairpods.service.AirPodsMonitorService
 import com.galaxyairpods.service.AirPodsOverlayService
 import com.galaxyairpods.update.UpdateManager
+import com.galaxyairpods.update.UpdateInfo
 import com.galaxyairpods.update.UpdateState
 import com.galaxyairpods.widget.AirPodsWidget
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -185,6 +186,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun checkForUpdates() {
         viewModelScope.launch { updateManager.check() }
+    }
+
+    fun startUpdate(info: UpdateInfo) {
+        viewModelScope.launch { updateManager.downloadAndInstall(info) }
     }
 
     fun installReadyUpdate(ready: UpdateState.Ready) {

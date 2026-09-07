@@ -89,6 +89,7 @@ fun AirPodsGalaxyApp(viewModel: AppViewModel = viewModel()) {
                         onStartScanning = viewModel::startScanning,
                         updateState = updateState,
                         onCheckForUpdates = viewModel::checkForUpdates,
+                        onStartUpdate = viewModel::startUpdate,
                         onInstallReady = viewModel::installReadyUpdate,
                     )
                 }

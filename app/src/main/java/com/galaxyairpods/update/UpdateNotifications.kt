@@ -50,7 +50,10 @@ internal object UpdateNotifications {
 
     fun cancel(context: Context) {
         context.getSystemService(NotificationManager::class.java)
-            ?.cancel(CONFIRMATION_NOTIFICATION_ID)
+            ?.apply {
+                cancel(INSTALL_PERMISSION_NOTIFICATION_ID)
+                cancel(CONFIRMATION_NOTIFICATION_ID)
+            }
     }
 
     private fun post(
