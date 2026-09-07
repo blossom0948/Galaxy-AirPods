@@ -1,5 +1,6 @@
 {
-  "versionCode": 5,
-  "versionName": "0.2.3",
-  "apkUrl": "https://github.com/blossom0948/Galaxy-AirPods/releases/latest/download/AirPodsGalaxy.apk"
+  "versionCode": 6,
+  "versionName": "0.2.4",
+  "apkUrl": "https://github.com/blossom0948/Galaxy-AirPods/releases/download/v0.2.4/AirPodsGalaxy.apk",
+  "sha256": "9d8b811b9bbb35c7b877de3b55023b082b70aff5486da8b524d87fa176fe472d"
 }

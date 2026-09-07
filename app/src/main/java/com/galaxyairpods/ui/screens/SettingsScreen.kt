@@ -145,7 +145,7 @@ private fun UpdateCard(
                 is UpdateState.Available -> {
                     Text("새 버전 ${state.info.versionName} 사용 가능")
                     Button(onClick = { onInstallUpdate(state.info) }) {
-                        Text("다운로드 및 설치")
+                        Text("업데이트 다운로드")
                     }
                 }
                 is UpdateState.Downloading -> {
@@ -153,8 +153,13 @@ private fun UpdateCard(
                 }
                 is UpdateState.Ready -> {
                     Text("다운로드 완료")
+                    Text(
+                        "파일을 모두 받은 뒤 설치를 시작합니다.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                     Button(onClick = { onInstallReady(state) }) {
-                        Text("설치 계속")
+                        Text("설치")
                     }
                 }
                 is UpdateState.Error -> {
