@@ -13,6 +13,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import com.galaxyairpods.domain.model.AirPodsModel
 import com.galaxyairpods.domain.model.AirPodsState
 import com.galaxyairpods.domain.model.DataConfidence
+import com.galaxyairpods.domain.model.isCompatibleWith
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
@@ -106,20 +107,25 @@ class AirPodsDataStore(private val context: Context) {
 
     suspend fun saveState(state: AirPodsState) {
         context.airPodsPreferences.edit { preferences ->
+            val storedModel = preferences[Keys.model]?.let { value ->
+                AirPodsModel.entries.firstOrNull { it.name == value }
+            }
+            val preserveKnownFields = storedModel != null && storedModel.isCompatibleWith(state.model)
+
             preferences.putNullable(Keys.deviceId, state.deviceId)
             preferences[Keys.model] = state.model.name
-            preferences.putNullable(Keys.leftBattery, state.leftBattery)
-            preferences.putNullable(Keys.rightBattery, state.rightBattery)
-            preferences.putNullable(Keys.caseBattery, state.caseBattery)
-            preferences.putNullable(Keys.leftCharging, state.leftCharging)
-            preferences.putNullable(Keys.rightCharging, state.rightCharging)
-            preferences.putNullable(Keys.caseCharging, state.caseCharging)
-            preferences.putNullable(Keys.leftInCase, state.leftInCase)
-            preferences.putNullable(Keys.rightInCase, state.rightInCase)
-            preferences.putNullable(Keys.caseOpen, state.caseOpen)
+            preferences.putNullablePreserving(Keys.leftBattery, state.leftBattery, preserveKnownFields)
+            preferences.putNullablePreserving(Keys.rightBattery, state.rightBattery, preserveKnownFields)
+            preferences.putNullablePreserving(Keys.caseBattery, state.caseBattery, preserveKnownFields)
+            preferences.putNullablePreserving(Keys.leftCharging, state.leftCharging, preserveKnownFields)
+            preferences.putNullablePreserving(Keys.rightCharging, state.rightCharging, preserveKnownFields)
+            preferences.putNullablePreserving(Keys.caseCharging, state.caseCharging, preserveKnownFields)
+            preferences.putNullablePreserving(Keys.leftInCase, state.leftInCase, preserveKnownFields)
+            preferences.putNullablePreserving(Keys.rightInCase, state.rightInCase, preserveKnownFields)
+            preferences.putNullablePreserving(Keys.caseOpen, state.caseOpen, preserveKnownFields)
             preferences[Keys.connected] = state.connected
             preferences[Keys.detected] = state.detected
-            preferences.putNullable(Keys.deviceName, state.deviceName)
+            preferences.putNullablePreserving(Keys.deviceName, state.deviceName, preserveKnownFields)
             preferences.putNullable(Keys.lastSeenAt, state.lastSeenAt)
             preferences[Keys.confidence] = state.confidence.name
         }
@@ -151,4 +157,12 @@ class AirPodsDataStore(private val context: Context) {
 
 private fun <T> MutablePreferences.putNullable(key: Preferences.Key<T>, value: T?) {
     if (value == null) remove(key) else this[key] = value
+}
+
+private fun <T> MutablePreferences.putNullablePreserving(
+    key: Preferences.Key<T>,
+    value: T?,
+    preserveExisting: Boolean,
+) {
+    if (value != null || !preserveExisting) putNullable(key, value)
 }

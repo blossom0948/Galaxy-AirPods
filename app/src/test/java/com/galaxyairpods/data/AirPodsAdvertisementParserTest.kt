@@ -51,6 +51,28 @@ class AirPodsAdvertisementParserTest {
     }
 
     @Test
+    fun decodesLegacyStatusPrefixWithKnownModel() {
+        val packet = AppleAirPodsParser.parseManufacturerData(
+            "0719000e2054aab5310000e00ca78a604bd37df4604f2c73e9a7f4".hex(),
+        )
+
+        requireNotNull(packet)
+        assertEquals(AirPodsModel.AIRPODS_PRO, packet.model)
+        assertEquals(50, packet.caseBattery)
+        assertEquals(true, packet.caseOpen)
+    }
+
+    @Test
+    fun findsStatusMessageAfterOemManufacturerHeader() {
+        val packet = AppleAirPodsParser.parseManufacturerData(
+            "1bff4c000719010e2054aab5310000e00ca78a604bd37df4604f2c73e9a7f4".hex(),
+        )
+
+        requireNotNull(packet)
+        assertEquals(50, packet.caseBattery)
+    }
+
+    @Test
     fun ignoresUnsupportedProximityFrames() {
         val packet = AppleAirPodsParser.parseManufacturerData(
             "0719070e2075aa3001000045121212000000000000000000000000".hex(),

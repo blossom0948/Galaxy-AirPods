@@ -1,45 +1,122 @@
 package com.galaxyairpods.service
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Intent
 import android.graphics.PixelFormat
 import android.os.IBinder
 import android.provider.Settings
 import android.view.Gravity
 import android.view.WindowManager
-import androidx.compose.ui.platform.ComposeView
-import androidx.compose.ui.platform.ViewCompositionStrategy
-import androidx.lifecycle.LifecycleService
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.collectAsState
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.material3.Text
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.compose.ui.unit.dp
+import androidx.core.app.NotificationCompat
+import androidx.lifecycle.LifecycleService
 import com.galaxyairpods.data.persistence.AirPodsDataStore
 import com.galaxyairpods.design.AirPodsGalaxyTheme
+import com.galaxyairpods.domain.model.AirPodsState
 import com.galaxyairpods.ui.components.BatteryGrid
 import com.galaxyairpods.ui.components.ProductRenderer
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 
 /**
- * Official overlay fallback surface. The service is intentionally opt-in: the
- * app asks for Settings.canDrawOverlays() and never silently starts it.
+ * Shows a short-lived system overlay containing the last real BLE state.
+ *
+ * This is a foreground service because Android can otherwise stop a service
+ * started while the activity is not visible. The monitor service starts it
+ * only after an actual connection or parsed packet event, and the window is
+ * never created without SYSTEM_ALERT_WINDOW permission.
  */
 class AirPodsOverlayService : LifecycleService() {
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val displayedState = MutableStateFlow<AirPodsState?>(null)
+    private lateinit var dataStore: AirPodsDataStore
     private var windowManager: WindowManager? = null
     private var overlayView: ComposeView? = null
+    private var refreshJob: Job? = null
+    private var hideJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
+        dataStore = AirPodsDataStore(this)
+
         if (!Settings.canDrawOverlays(this)) {
+            stopSelf()
+            return
+        }
+
+        createNotificationChannel()
+        val foregroundStarted = runCatching {
+            startForeground(
+                NOTIFICATION_ID,
+                buildNotification(),
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+            )
+        }.isSuccess
+        if (!foregroundStarted) {
+            stopSelf()
+            return
+        }
+
+        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        super.onStartCommand(intent, flags, startId)
+        if (!Settings.canDrawOverlays(this)) {
+            stopSelfResult(startId)
+            return START_NOT_STICKY
+        }
+
+        refreshJob?.cancel()
+        refreshJob = serviceScope.launch {
+            val state = dataStore.latestDisplayState.first()
+            if (state == null) {
+                stopSelfResult(startId)
+                return@launch
+            }
+
+            displayedState.value = state
+            ensureOverlayView()
+
+            hideJob?.cancel()
+            val durationSeconds = dataStore.popupDuration.first().coerceIn(2, 15)
+            hideJob = launch {
+                delay(durationSeconds * 1_000L)
+                stopSelf()
+            }
+        }
+        return START_NOT_STICKY
+    }
+
+    private fun ensureOverlayView() {
+        if (overlayView != null) return
+        val manager = windowManager ?: run {
             stopSelf()
             return
         }
@@ -48,7 +125,8 @@ class AirPodsOverlayService : LifecycleService() {
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.BOTTOM
@@ -58,28 +136,66 @@ class AirPodsOverlayService : LifecycleService() {
             setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
             setContent {
                 AirPodsGalaxyTheme {
-                    OverlayNotice(onClose = { stopSelf() })
+                    OverlayNotice(
+                        state = displayedState,
+                        onClose = { stopSelf() },
+                    )
                 }
             }
         }
-        overlayView = view
-        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-        runCatching { windowManager?.addView(view, params) }.onFailure { stopSelf() }
+
+        runCatching { manager.addView(view, params) }
+            .onSuccess { overlayView = view }
+            .onFailure { stopSelf() }
     }
 
+    private fun createNotificationChannel() {
+        getSystemService(NotificationManager::class.java)?.createNotificationChannel(
+            NotificationChannel(
+                CHANNEL_ID,
+                "AirPods 팝업",
+                NotificationManager.IMPORTANCE_LOW,
+            ).apply {
+                description = "AirPods 상태 팝업을 표시하는 동안 사용합니다."
+            },
+        )
+    }
+
+    private fun buildNotification(): Notification = NotificationCompat.Builder(this, CHANNEL_ID)
+        .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+        .setContentTitle("AirPods Galaxy")
+        .setContentText("AirPods 상태 팝업 표시 중")
+        .setCategory(NotificationCompat.CATEGORY_SERVICE)
+        .setOnlyAlertOnce(true)
+        .setOngoing(false)
+        .build()
+
     override fun onDestroy() {
+        refreshJob?.cancel()
+        hideJob?.cancel()
         overlayView?.let { view -> runCatching { windowManager?.removeView(view) } }
         overlayView = null
+        serviceScope.cancel()
+        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent): IBinder? = super.onBind(intent)
+
+    private companion object {
+        const val CHANNEL_ID = "airpods_overlay"
+        const val NOTIFICATION_ID = 1002
+    }
 }
 
 @Composable
-private fun OverlayNotice(onClose: () -> Unit) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val state by AirPodsDataStore(context).latestDisplayState.collectAsState(initial = null)
+private fun OverlayNotice(
+    state: StateFlow<AirPodsState?>,
+    onClose: () -> Unit,
+) {
+    val current by state.collectAsState()
+    if (current == null) return
+
     Surface(
         modifier = Modifier.fillMaxWidth().padding(12.dp),
         shape = MaterialTheme.shapes.extraLarge,
@@ -87,16 +203,14 @@ private fun OverlayNotice(onClose: () -> Unit) {
         tonalElevation = 12.dp,
     ) {
         Column(Modifier.padding(18.dp)) {
-            if (state == null) {
-                Text("AirPods Galaxy", style = MaterialTheme.typography.titleLarge)
-                Spacer(Modifier.height(6.dp))
-                Text("저장된 실측 상태가 없습니다.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            } else {
-                Text(state!!.model.label, style = MaterialTheme.typography.titleLarge)
-                Text("AirPods 배터리", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                ProductRenderer(state = state!!, openProgress = if (state!!.caseOpen == true) 1f else 0f)
-                BatteryGrid(state = state!!, modifier = Modifier.fillMaxWidth())
-            }
+            Text(current!!.model.label, style = MaterialTheme.typography.titleLarge)
+            Text("AirPods 배터리", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(6.dp))
+            ProductRenderer(
+                state = current!!,
+                openProgress = if (current!!.caseOpen == true) 1f else 0f,
+            )
+            BatteryGrid(state = current!!, modifier = Modifier.fillMaxWidth())
             TextButton(onClick = onClose, modifier = Modifier.align(Alignment.End)) {
                 Text("닫기")
             }

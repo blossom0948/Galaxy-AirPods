@@ -20,33 +20,7 @@ class BleAirPodsRepository(
     override val state: StateFlow<AirPodsState> = _state.asStateFlow()
 
     override suspend fun applyParsedPacket(deviceId: String, packet: ParsedAirPodsPacket, seenAt: Long) {
-        val current = _state.value
-        val sameDevice = sameLogicalAirPods(current, deviceId, packet.model)
-        val model = if (sameDevice && packet.model == AirPodsModel.AIRPODS &&
-            current.model != AirPodsModel.UNKNOWN && current.model != AirPodsModel.AIRPODS
-        ) {
-            current.model
-        } else {
-            packet.model
-        }
-        val newState = AirPodsState(
-            deviceId = if (sameDevice) current.deviceId ?: deviceId else deviceId,
-            model = model,
-            leftBattery = packet.leftBattery,
-            rightBattery = packet.rightBattery,
-            caseBattery = packet.caseBattery,
-            leftCharging = packet.leftCharging,
-            rightCharging = packet.rightCharging,
-            caseCharging = packet.caseCharging,
-            leftInCase = packet.leftInCase,
-            rightInCase = packet.rightInCase,
-            caseOpen = packet.caseOpen,
-            connected = sameDevice && current.connected,
-            detected = true,
-            deviceName = current.deviceName.takeIf { sameDevice },
-            lastSeenAt = seenAt,
-            confidence = packet.confidence,
-        )
+        val newState = mergeParsedState(_state.value, deviceId, packet, seenAt)
         _state.value = newState
         dataStore.saveState(newState)
     }
@@ -83,6 +57,44 @@ class BleAirPodsRepository(
         _state.value = newState
         dataStore.saveState(newState)
     }
+}
+
+internal fun mergeParsedState(
+    current: AirPodsState,
+    deviceId: String,
+    packet: ParsedAirPodsPacket,
+    seenAt: Long,
+): AirPodsState {
+    val sameDevice = sameLogicalAirPods(current, deviceId, packet.model)
+    val model = if (sameDevice && packet.model == AirPodsModel.AIRPODS &&
+        current.model != AirPodsModel.UNKNOWN && current.model != AirPodsModel.AIRPODS
+    ) {
+        current.model
+    } else {
+        packet.model
+    }
+
+    return AirPodsState(
+        deviceId = if (sameDevice) current.deviceId ?: deviceId else deviceId,
+        model = model,
+        // A valid AirPods broadcast can omit a battery/lid field (0xF or an
+        // out-of-case frame). Do not erase the last real value when a later
+        // packet only contains the other side's status.
+        leftBattery = packet.leftBattery ?: current.leftBattery.takeIf { sameDevice },
+        rightBattery = packet.rightBattery ?: current.rightBattery.takeIf { sameDevice },
+        caseBattery = packet.caseBattery ?: current.caseBattery.takeIf { sameDevice },
+        leftCharging = packet.leftCharging ?: current.leftCharging.takeIf { sameDevice },
+        rightCharging = packet.rightCharging ?: current.rightCharging.takeIf { sameDevice },
+        caseCharging = packet.caseCharging ?: current.caseCharging.takeIf { sameDevice },
+        leftInCase = packet.leftInCase ?: current.leftInCase.takeIf { sameDevice },
+        rightInCase = packet.rightInCase ?: current.rightInCase.takeIf { sameDevice },
+        caseOpen = packet.caseOpen ?: current.caseOpen.takeIf { sameDevice },
+        connected = sameDevice && current.connected,
+        detected = true,
+        deviceName = current.deviceName.takeIf { sameDevice },
+        lastSeenAt = seenAt,
+        confidence = packet.confidence,
+    )
 }
 
 internal fun sameLogicalAirPods(

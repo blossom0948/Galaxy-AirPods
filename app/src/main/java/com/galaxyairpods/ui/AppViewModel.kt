@@ -3,6 +3,7 @@ package com.galaxyairpods.ui
 import android.app.Application
 import android.content.Intent
 import android.provider.Settings
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.galaxyairpods.data.BleAirPodsRepository
@@ -191,7 +192,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun testOverlay() {
         val context = getApplication<Application>()
         if (Settings.canDrawOverlays(context)) {
-            context.startService(Intent(context, AirPodsOverlayService::class.java))
+            ContextCompat.startForegroundService(context, Intent(context, AirPodsOverlayService::class.java))
         }
     }
 

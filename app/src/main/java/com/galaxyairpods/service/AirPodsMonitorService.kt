@@ -8,7 +8,9 @@ import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.IBinder
+import android.provider.Settings
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import com.galaxyairpods.MainActivity
 import com.galaxyairpods.data.BleAirPodsRepository
 import com.galaxyairpods.data.bluetooth.AirPodsBleScanner
@@ -72,8 +74,15 @@ class AirPodsMonitorService : Service() {
 
                 val firstDetection = previous.deviceId == null || previous.deviceId != current.deviceId
                 val caseOpened = event.packet.caseOpen == true && previous.caseOpen != true
+                val batteryChanged = previous.leftBattery != current.leftBattery ||
+                    previous.rightBattery != current.rightBattery ||
+                    previous.caseBattery != current.caseBattery
+                val chargingChanged = previous.leftCharging != current.leftCharging ||
+                    previous.rightCharging != current.rightCharging ||
+                    previous.caseCharging != current.caseCharging
                 val showPopup = dataStore.autoPopup.first() &&
-                    (firstDetection || (caseOpened && dataStore.showOnCaseOpen.first()))
+                    (firstDetection || batteryChanged || chargingChanged ||
+                        (caseOpened && dataStore.showOnCaseOpen.first()))
 
                 if (showPopup) {
                     showOverlayIfPermitted()
@@ -107,9 +116,9 @@ class AirPodsMonitorService : Service() {
     }
 
     private fun showOverlayIfPermitted() {
-        if (!android.provider.Settings.canDrawOverlays(this)) return
+        if (!Settings.canDrawOverlays(this)) return
         runCatching {
-            startService(Intent(this, AirPodsOverlayService::class.java))
+            ContextCompat.startForegroundService(this, Intent(this, AirPodsOverlayService::class.java))
         }
     }
 
@@ -175,7 +184,15 @@ class AirPodsMonitorService : Service() {
         }
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // The system receiver can wake an already-running service when
+        // Bluetooth is turned back on. Re-entering start() is idempotent and
+        // restarts the BLE scan if the adapter was unavailable during onCreate.
+        if (::scannerLease.isInitialized) {
+            scannerLease.start(android.bluetooth.le.ScanSettings.SCAN_MODE_LOW_LATENCY)
+        }
+        return START_STICKY
+    }
 
     override fun onDestroy() {
         scannerLease.close()

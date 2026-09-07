@@ -18,10 +18,11 @@ interface AirPodsPacketParser {
  * Android exposes the Apple company identifier (0x004C) as the key of the
  * manufacturer-data map and the remaining bytes as the value. The value is a
  * Continuity message: [type, length, payload]. AirPods status broadcasts use
- * type 0x07. Official AirPods status broadcasts use the 0x01 payload prefix
- * and a 25-byte payload. Other 0x07 frames are emitted by Apple devices during
- * connection/address transitions, but do not contain the public battery fields
- * at these offsets; accepting them creates false devices and wipes real data.
+ * type 0x07. Current status broadcasts use the 0x01 payload prefix and a
+ * 25-byte payload. Some older firmware uses 0x00 for the same 25-byte status
+ * frame, so that form is accepted only when its model code is known. Other
+ * 0x07 frames are emitted by Apple devices during connection/address
+ * transitions, but do not contain the public battery fields at these offsets.
  */
 class AppleAirPodsParser : AirPodsPacketParser {
     override val parserVersion: String = "apple-proximity-v1"
@@ -44,6 +45,7 @@ class AppleAirPodsParser : AirPodsPacketParser {
 
         private const val PROXIMITY_MESSAGE_TYPE = 0x07
         private const val PLAINTEXT_STATUS_PREFIX = 0x01
+        private const val LEGACY_STATUS_PREFIX = 0x00
         private const val AIRPODS_STATUS_LENGTH = 25
 
         private val MODEL_CODES = mapOf(
@@ -64,22 +66,25 @@ class AppleAirPodsParser : AirPodsPacketParser {
         /** Parses Android's manufacturer-data value without requiring a ScanResult. */
         fun parseManufacturerData(manufacturerData: ByteArray): ParsedAirPodsPacket? {
             val bytes = manufacturerData.withoutCompanyPrefix()
-            var cursor = 0
+            // ScanRecord normally gives us only the manufacturer value, but
+            // a few OEM Bluetooth stacks leave an AD/company header in it.
+            // Locate a complete 07/19 message instead of assuming offset 0.
+            for (cursor in 0 until (bytes.size - 1).coerceAtLeast(0)) {
+                if (bytes[cursor].u8() != PROXIMITY_MESSAGE_TYPE ||
+                    bytes[cursor + 1].u8() != AIRPODS_STATUS_LENGTH
+                ) continue
 
-            while (cursor + 2 <= bytes.size) {
-                val type = bytes[cursor].u8()
-                val length = bytes[cursor + 1].u8()
                 val payloadStart = cursor + 2
-                val payloadEnd = payloadStart + length
-                if (payloadEnd > bytes.size) return null
+                val payloadEnd = payloadStart + AIRPODS_STATUS_LENGTH
+                if (payloadEnd > bytes.size) continue
 
-                if (type == PROXIMITY_MESSAGE_TYPE && length == AIRPODS_STATUS_LENGTH) {
-                    val payload = bytes.copyOfRange(payloadStart, payloadEnd)
-                    if (payload[0].u8() == PLAINTEXT_STATUS_PREFIX) {
-                        return decodePayload(payload)
-                    }
+                val payload = bytes.copyOfRange(payloadStart, payloadEnd)
+                val prefix = payload[0].u8()
+                val modelCode = (payload[1].u8() shl 8) or payload[2].u8()
+                val legacyFrame = prefix == LEGACY_STATUS_PREFIX && MODEL_CODES.containsKey(modelCode)
+                if (prefix == PLAINTEXT_STATUS_PREFIX || legacyFrame) {
+                    return decodePayload(payload)
                 }
-                cursor = payloadEnd
             }
             return null
         }
@@ -172,7 +177,10 @@ class AppleAirPodsParser : AirPodsPacketParser {
         }
 
         private fun ByteArray.withoutCompanyPrefix(): ByteArray =
-            if (size >= 2 && this[0].u8() == 0x4C && this[1].u8() == 0x00) {
+            if (size >= 2 &&
+                ((this[0].u8() == 0x4C && this[1].u8() == 0x00) ||
+                    (this[0].u8() == 0x00 && this[1].u8() == 0x4C))
+            ) {
                 copyOfRange(2, size)
             } else {
                 this
