@@ -30,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.galaxyairpods.BuildConfig
 import com.galaxyairpods.domain.model.AirPodsModel
 import com.galaxyairpods.permissions.PermissionManager
 import com.galaxyairpods.update.UpdateInfo
@@ -180,6 +181,11 @@ private fun UpdateCard(
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp)) {
             Text("업데이트", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "현재 버전 v${BuildConfig.VERSION_NAME}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             when (state) {
                 UpdateState.Idle -> Text("새 버전은 자동으로 확인됩니다")
                 UpdateState.Checking -> Text("최신 버전 확인 중…")
@@ -223,14 +229,14 @@ private fun UpdateCard(
                     Text(state.message, color = MaterialTheme.colorScheme.error)
                 }
             }
-            if (state !is UpdateState.Checking &&
-                state !is UpdateState.Downloading &&
-                state !is UpdateState.Ready &&
-                state !is UpdateState.Installing
+            Button(
+                onClick = onCheckForUpdates,
+                enabled = state !is UpdateState.Checking &&
+                    state !is UpdateState.Downloading &&
+                    state !is UpdateState.Ready &&
+                    state !is UpdateState.Installing,
             ) {
-                Button(onClick = onCheckForUpdates) {
-                    Text("수동으로 업데이트 확인")
-                }
+                Text("수동으로 업데이트 확인")
             }
         }
     }

@@ -8,11 +8,31 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import androidx.core.app.NotificationCompat
+import com.galaxyairpods.MainActivity
 
 internal object UpdateNotifications {
     private const val CHANNEL_ID = "app_updates"
+    private const val AVAILABLE_NOTIFICATION_ID = 2000
     private const val INSTALL_PERMISSION_NOTIFICATION_ID = 2001
     private const val CONFIRMATION_NOTIFICATION_ID = 2002
+
+    fun notifyAvailable(context: Context, info: UpdateInfo) {
+        val launchIntent = Intent(context, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        }
+        post(
+            context = context,
+            id = AVAILABLE_NOTIFICATION_ID,
+            title = "AirPods Galaxy ${info.versionName} 업데이트",
+            text = "새 버전이 있습니다. 앱의 설정에서 업데이트를 시작하세요.",
+            contentIntent = PendingIntent.getActivity(
+                context,
+                AVAILABLE_NOTIFICATION_ID,
+                launchIntent,
+                pendingIntentFlags(),
+            ),
+        )
+    }
 
     fun notifyInstallPermission(context: Context) {
         val settingsIntent = Intent(
@@ -49,11 +69,16 @@ internal object UpdateNotifications {
     }
 
     fun cancel(context: Context) {
+        cancelAvailable(context)
+        context.getSystemService(NotificationManager::class.java)?.apply {
+            cancel(INSTALL_PERMISSION_NOTIFICATION_ID)
+            cancel(CONFIRMATION_NOTIFICATION_ID)
+        }
+    }
+
+    fun cancelAvailable(context: Context) {
         context.getSystemService(NotificationManager::class.java)
-            ?.apply {
-                cancel(INSTALL_PERMISSION_NOTIFICATION_ID)
-                cancel(CONFIRMATION_NOTIFICATION_ID)
-            }
+            ?.cancel(AVAILABLE_NOTIFICATION_ID)
     }
 
     private fun post(
@@ -73,17 +98,19 @@ internal object UpdateNotifications {
                 ),
             )
         }
-        manager.notify(
-            id,
-            NotificationCompat.Builder(context, CHANNEL_ID)
-                .setSmallIcon(android.R.drawable.stat_sys_download_done)
-                .setContentTitle(title)
-                .setContentText(text)
-                .setContentIntent(contentIntent)
-                .setAutoCancel(true)
-                .setPriority(NotificationCompat.PRIORITY_HIGH)
-                .build(),
-        )
+        runCatching {
+            manager.notify(
+                id,
+                NotificationCompat.Builder(context, CHANNEL_ID)
+                    .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                    .setContentTitle(title)
+                    .setContentText(text)
+                    .setContentIntent(contentIntent)
+                    .setAutoCancel(true)
+                    .setPriority(NotificationCompat.PRIORITY_HIGH)
+                    .build(),
+            )
+        }
     }
 
     private fun pendingIntentFlags(): Int = PendingIntent.FLAG_UPDATE_CURRENT or

@@ -81,8 +81,10 @@ class UpdateManager(context: Context) {
                         .remove(ATTEMPTED_AT_KEY)
                         .remove(BLOCKED_VERSION_KEY)
                         .apply()
+                    UpdateNotifications.cancelAvailable(context)
                     _state.value = UpdateState.UpToDate
                 } else {
+                    UpdateNotifications.notifyAvailable(context, info)
                     _state.value = UpdateState.Available(info)
                     val attempted = preferences.getInt(ATTEMPTED_VERSION_KEY, -1)
                     val attemptedAt = preferences.getLong(ATTEMPTED_AT_KEY, 0L)
@@ -408,7 +410,12 @@ class UpdateManager(context: Context) {
     private fun String.matchString(key: String): String? =
         Regex("""["]$key["]\s*:\s*["]([^"]+)["]""").find(this)?.groupValues?.getOrNull(1)
 
-    private fun manifestUrl(): String = "$MANIFEST_URL?cache=${System.currentTimeMillis() / MANIFEST_CACHE_BUCKET_MS}"
+    /**
+     * A manual check must not reuse a previously cached raw.githubusercontent.com
+     * response. A unique query value also avoids the short-lived edge-cache
+     * window immediately after a release is published.
+     */
+    private fun manifestUrl(): String = "$MANIFEST_URL?cache=${System.currentTimeMillis()}"
 
     private fun HttpURLConnection.useConnection(block: HttpURLConnection.() -> String): String {
         connectTimeout = 10_000
@@ -429,7 +436,6 @@ class UpdateManager(context: Context) {
         private const val ATTEMPTED_VERSION_KEY = "attempted_version"
         private const val ATTEMPTED_AT_KEY = "attempted_at"
         private const val BLOCKED_VERSION_KEY = "blocked_version"
-        private const val MANIFEST_CACHE_BUCKET_MS = 5 * 60 * 1000L
         private const val AUTO_CHECK_INTERVAL_MS = 30 * 60 * 1000L
         private const val AUTO_RETRY_COOLDOWN_MS = 60 * 60 * 1000L
         private const val MAX_DOWNLOAD_ATTEMPTS = 5

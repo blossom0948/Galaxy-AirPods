@@ -67,8 +67,10 @@ fun AirPodsGalaxyApp(viewModel: AppViewModel = viewModel()) {
                     AppDestination.HOME -> HomeScreen(
                         state = airPodsState,
                         scanStatus = scanStatus,
+                        updateState = updateState,
                         onStartScanning = viewModel::startScanning,
                         onOpenSettings = { destinationName = AppDestination.SETTINGS.name },
+                        onStartUpdate = viewModel::startUpdate,
                     )
 
                     AppDestination.SETTINGS -> SettingsScreen(

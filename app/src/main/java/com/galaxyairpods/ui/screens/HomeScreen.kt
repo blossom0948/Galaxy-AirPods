@@ -34,13 +34,17 @@ import com.galaxyairpods.domain.model.AirPodsConnectionState
 import com.galaxyairpods.permissions.PermissionManager
 import com.galaxyairpods.ui.components.BatteryGrid
 import com.galaxyairpods.ui.components.ProductRenderer
+import com.galaxyairpods.update.UpdateInfo
+import com.galaxyairpods.update.UpdateState
 
 @Composable
 fun HomeScreen(
     state: AirPodsState,
     scanStatus: String,
+    updateState: UpdateState,
     onStartScanning: () -> Unit,
     onOpenSettings: () -> Unit,
+    onStartUpdate: (UpdateInfo) -> Unit,
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var permissionRefresh by remember { mutableIntStateOf(0) }
@@ -98,6 +102,30 @@ fun HomeScreen(
                     Button(onClick = {
                         permissionLauncher.launch(PermissionManager.runtimePermissions())
                     }) { Text("권한 허용") }
+                }
+            }
+        }
+
+        if (updateState is UpdateState.Available) {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                ),
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    Text(
+                        "새 버전 ${updateState.info.versionName} 사용 가능",
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    Text(
+                        "업데이트가 감지되었습니다. 지금 다운로드와 설치를 시작할 수 있습니다.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Button(onClick = { onStartUpdate(updateState.info) }) {
+                        Text("업데이트 시작")
+                    }
                 }
             }
         }
