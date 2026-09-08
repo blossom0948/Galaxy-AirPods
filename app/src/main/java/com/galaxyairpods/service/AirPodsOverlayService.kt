@@ -309,6 +309,7 @@ private fun wearLabel(state: AirPodsState): String = when (state.wearState) {
     com.galaxyairpods.domain.model.AirPodsWearState.LEFT_IN_EAR -> "왼쪽 착용"
     com.galaxyairpods.domain.model.AirPodsWearState.RIGHT_IN_EAR -> "오른쪽 착용"
     com.galaxyairpods.domain.model.AirPodsWearState.BOTH_IN_EAR -> "양쪽 착용"
+    com.galaxyairpods.domain.model.AirPodsWearState.PARTIAL_IN_EAR -> "부분 착용"
     com.galaxyairpods.domain.model.AirPodsWearState.NONE_IN_EAR -> "미착용"
     com.galaxyairpods.domain.model.AirPodsWearState.IN_CASE -> "케이스 안"
     com.galaxyairpods.domain.model.AirPodsWearState.CONFLICT -> "착용 상태 충돌"

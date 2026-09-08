@@ -12,10 +12,8 @@ import com.galaxyairpods.data.bluetooth.AirPodsScannerHub
 import com.galaxyairpods.data.persistence.AirPodsDataStore
 import com.galaxyairpods.domain.model.AirPodsModel
 import com.galaxyairpods.domain.model.AirPodsState
-import com.galaxyairpods.domain.model.PopupEvent
 import com.galaxyairpods.domain.model.mergeKnownValuesFrom
 import com.galaxyairpods.domain.motion.MotionLabSettings
-import com.galaxyairpods.domain.popup.PopupMotionController
 import com.galaxyairpods.permissions.PermissionManager
 import com.galaxyairpods.service.AirPodsMonitorService
 import com.galaxyairpods.service.AirPodsOverlayService
@@ -41,8 +39,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val scannerLease = AirPodsScannerHub.acquire(application)
     val scanner: AirPodsBleScanner = scannerLease.scanner
     val scanStatus: StateFlow<String> = scanner.status
-    val popupController = PopupMotionController()
-    val popupState: StateFlow<com.galaxyairpods.domain.model.PopupUiState> = popupController.state
     val motionSettings: MotionLabSettings = MotionLabSettings.Default
 
     val airPodsState: StateFlow<AirPodsState> = combine(
@@ -113,12 +109,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         startAutomaticUpdateChecks()
         viewModelScope.launch {
             scanner.validatedPackets.collect { event ->
-                val previous = liveRepository.state.value
                 liveRepository.applyParsedPacket(
                     deviceId = event.deviceId,
                     packet = event.packet,
                     seenAt = event.seenAt,
                     wearDetectionEnabled = wearDetectionEnabled.value,
+                    deviceProfileId = event.deviceProfileId,
+                    capturedAtElapsedMs = event.capturedAtElapsedMs,
                 )
                 val current = liveRepository.state.value
                 val displayState = displayState(current)
@@ -130,21 +127,10 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     caseBattery = current.caseBattery,
                     modelLabel = displayState.model.label,
                 )
-
-                if (shouldShowPopup(previous, current, event.packet.caseOpen)) {
-                    if (popupController.state.value.isVisible) {
-                        popupController.dispatch(PopupEvent.BatteryUpdated(displayState))
-                    } else {
-                        popupController.show(displayState)
-                    }
-                } else if (popupController.state.value.isVisible) {
-                    popupController.dispatch(PopupEvent.BatteryUpdated(displayState))
-                }
             }
         }
         viewModelScope.launch {
             scanner.bluetoothEvents.collect { event ->
-                val previous = liveRepository.state.value
                 liveRepository.applyBluetoothConnection(event)
                 val current = liveRepository.state.value
                 val displayState = displayState(current)
@@ -156,21 +142,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     caseBattery = current.caseBattery,
                     modelLabel = displayState.model.label,
                 )
-
-                val connectionChangedToLive =
-                    current.connectionState == com.galaxyairpods.domain.model.AirPodsConnectionState.ANDROID_CONNECTED &&
-                        previous.connectionState != com.galaxyairpods.domain.model.AirPodsConnectionState.ANDROID_CONNECTED
-                val nearbyDetected = current.connectionState !=
-                    com.galaxyairpods.domain.model.AirPodsConnectionState.DISCONNECTED &&
-                    current.connectionState != com.galaxyairpods.domain.model.AirPodsConnectionState.UNKNOWN &&
-                    current.connectionState != previous.connectionState
-                if (autoPopup.value && (connectionChangedToLive || nearbyDetected)) {
-                    if (popupController.state.value.isVisible) {
-                        popupController.dispatch(PopupEvent.BatteryUpdated(displayState))
-                    } else {
-                        popupController.show(displayState)
-                    }
-                }
             }
         }
         viewModelScope.launch {
@@ -186,24 +157,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     caseBattery = current.caseBattery,
                     modelLabel = displayState.model.label,
                 )
-
-                // Battery events update an existing surface only. AAP/BLE
-                // acquisition must not create a popup by itself.
-                if (popupController.state.value.isVisible) {
-                    popupController.dispatch(PopupEvent.BatteryUpdated(displayState))
-                }
             }
         }
         viewModelScope.launch {
             scanner.classicWearEvents.collect { event ->
                 if (!wearDetectionEnabled.value) return@collect
                 liveRepository.applyClassicAapWear(event)
-                val current = displayState(liveRepository.state.value)
-                if (popupController.state.value.isVisible) {
-                    popupController.dispatch(
-                        PopupEvent.BatteryUpdated(current),
-                    )
-                }
             }
         }
         viewModelScope.launch {
@@ -277,32 +236,6 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (Settings.canDrawOverlays(context)) {
             context.startService(Intent(context, AirPodsOverlayService::class.java))
         }
-    }
-
-    fun dismissPopup() = popupController.dispatch(PopupEvent.UserDismiss)
-
-    fun hidePopup() = popupController.hide()
-
-    fun markPopupBatteryVisible() = popupController.markBatteryVisible()
-
-    fun markPopupIdle() = popupController.markIdle()
-
-    private fun shouldShowPopup(
-        previous: AirPodsState,
-        current: AirPodsState,
-        currentCaseOpen: Boolean?,
-    ): Boolean {
-        if (!autoPopup.value) return false
-
-        val firstDetection = previous.deviceId == null || previous.deviceId != current.deviceId
-        val connectionChanged = current.connectionState ==
-            com.galaxyairpods.domain.model.AirPodsConnectionState.ANDROID_CONNECTED &&
-            previous.connectionState != com.galaxyairpods.domain.model.AirPodsConnectionState.ANDROID_CONNECTED
-        val caseOpened = currentCaseOpen == true && previous.caseOpen != true
-
-        return firstDetection ||
-            connectionChanged ||
-            (caseOpened && showOnCaseOpen.value)
     }
 
     private fun displayState(state: AirPodsState): AirPodsState {

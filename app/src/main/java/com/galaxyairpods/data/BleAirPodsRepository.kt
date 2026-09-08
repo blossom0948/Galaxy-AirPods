@@ -31,13 +31,17 @@ class BleAirPodsRepository(
         packet: ParsedAirPodsPacket,
         seenAt: Long,
         wearDetectionEnabled: Boolean,
+        deviceProfileId: String?,
+        capturedAtElapsedMs: Long?,
     ) {
         val newState = mergeParsedState(
             current = _state.value,
             deviceId = deviceId,
+            deviceProfileId = deviceProfileId,
             packet = packet,
             seenAt = seenAt,
             wearDetectionEnabled = wearDetectionEnabled,
+            capturedAtElapsedMs = capturedAtElapsedMs,
         )
         _state.value = newState
         val source = newState.batterySource?.let {
@@ -51,11 +55,33 @@ class BleAirPodsRepository(
 
     suspend fun applyBluetoothConnection(event: BluetoothAirPodsEvent) {
         val current = _state.value
-        val sameDevice = sameLogicalAirPods(current, event.deviceId, event.model)
+        val sameDevice = sameLogicalAirPods(
+            current = current,
+            incomingDeviceId = event.deviceId,
+            incomingModel = event.model,
+            incomingProfileId = event.deviceProfileId,
+            allowModelFallback = event.connectionState == AirPodsConnectionState.ANDROID_CONNECTED,
+        )
         val clearCharging = event.connectionState != AirPodsConnectionState.ANDROID_CONNECTED
+        // A connection transition away from Android audio invalidates the
+        // previous wear sample. A fresh BLE/AAP wear event may populate it
+        // again, but an iPad/nearby-only snapshot must not keep old wear live.
+        val clearWear = event.connectionState != AirPodsConnectionState.ANDROID_CONNECTED
         val newState = if (sameDevice) {
             current.copy(
-                deviceId = current.deviceId ?: event.deviceId,
+                // Once Android confirms the audio profile, its Classic
+                // address becomes the route anchor. BLE may have arrived on a
+                // rotating address before this event.
+                deviceId = if (event.connectionState == AirPodsConnectionState.ANDROID_CONNECTED) {
+                    event.deviceId
+                } else {
+                    current.deviceId ?: event.deviceId
+                },
+                deviceProfileId = if (event.connectionState == AirPodsConnectionState.ANDROID_CONNECTED) {
+                    event.deviceProfileId
+                } else {
+                    current.deviceProfileId ?: event.deviceProfileId
+                },
                 model = when {
                     current.model == AirPodsModel.UNKNOWN || current.model == AirPodsModel.AIRPODS -> event.model
                     event.model == AirPodsModel.UNKNOWN || event.model == AirPodsModel.AIRPODS -> current.model
@@ -66,17 +92,26 @@ class BleAirPodsRepository(
                 detected = event.connectionState != AirPodsConnectionState.UNKNOWN,
                 connectionState = event.connectionState,
                 deviceName = event.deviceName,
+                a2dpConnected = event.a2dpConnected,
+                headsetConnected = event.headsetConnected,
+                aapReady = event.aapReady,
                 lastSeenAt = event.seenAt,
                 confidence = DataConfidence.LIVE,
-            ).clearChargingIf(clearCharging).withFreshCharging(event.seenAt)
+            ).clearChargingIf(clearCharging)
+                .clearWearIf(clearWear)
+                .withFreshCharging(event.seenAt)
         } else {
             AirPodsState(
                 deviceId = event.deviceId,
+                deviceProfileId = event.deviceProfileId,
                 model = event.model,
                 connected = event.connectionState == AirPodsConnectionState.ANDROID_CONNECTED,
                 detected = event.connectionState != AirPodsConnectionState.UNKNOWN,
                 connectionState = event.connectionState,
                 deviceName = event.deviceName,
+                a2dpConnected = event.a2dpConnected,
+                headsetConnected = event.headsetConnected,
+                aapReady = event.aapReady,
                 lastSeenAt = event.seenAt,
                 confidence = DataConfidence.LIVE,
             )
@@ -87,12 +122,18 @@ class BleAirPodsRepository(
 
     internal suspend fun applyClassicAapBattery(event: ClassicAapBatteryEvent) {
         val current = _state.value
-        val sameDevice = sameLogicalAirPods(current, event.deviceId, event.model)
+        val sameDevice = sameLogicalAirPods(
+            current = current,
+            incomingDeviceId = event.deviceId,
+            incomingModel = event.model,
+            incomingProfileId = event.deviceProfileId,
+        )
         val base = if (sameDevice) {
             current
         } else {
             AirPodsState(
                 deviceId = event.deviceId,
+                deviceProfileId = event.deviceProfileId,
                 model = event.model,
                 connected = false,
                 detected = true,
@@ -111,6 +152,7 @@ class BleAirPodsRepository(
         } ?: base.caseChargingEvidence
         val newState = base.copy(
             deviceId = base.deviceId ?: event.deviceId,
+            deviceProfileId = base.deviceProfileId ?: event.deviceProfileId,
             model = when {
                 base.model == AirPodsModel.UNKNOWN || base.model == AirPodsModel.AIRPODS -> event.model
                 else -> base.model
@@ -141,21 +183,31 @@ class BleAirPodsRepository(
     internal suspend fun applyClassicAapWear(event: ClassicAapWearEvent) {
         val stableWearState = event.wearState ?: return
         val current = _state.value
-        val sameDevice = sameLogicalAirPods(current, event.deviceId, event.model)
+        val sameDevice = sameLogicalAirPods(
+            current = current,
+            incomingDeviceId = event.deviceId,
+            incomingModel = event.model,
+            incomingProfileId = event.deviceProfileId,
+        )
         val base = if (sameDevice) current else AirPodsState(
             deviceId = event.deviceId,
+            deviceProfileId = event.deviceProfileId,
             model = event.model,
             detected = true,
             connectionState = AirPodsConnectionState.UNKNOWN,
         )
         val newState = base.copy(
             deviceId = base.deviceId ?: event.deviceId,
+            deviceProfileId = base.deviceProfileId ?: event.deviceProfileId,
             model = if (base.model == AirPodsModel.UNKNOWN) event.model else base.model,
             primaryPodIsLeft = event.primaryPodIsLeft ?: base.primaryPodIsLeft,
             wearState = stableWearState,
             wearSource = "AAP_CLASSIC_0x0006",
             wearCapturedAt = event.seenAt,
             wearExpiresAt = event.seenAt + WEAR_TTL_MS,
+            wearCapturedAtElapsedMs = event.capturedAtElapsedMs,
+            wearExpiresAtElapsedMs = event.capturedAtElapsedMs + WEAR_TTL_MS,
+            wearDeviceProfileId = event.deviceProfileId,
             lastSeenAt = maxOf(base.lastSeenAt ?: 0L, event.seenAt),
         ).clearPodChargingWhenOutOfCase(stableWearState).withFreshWear(event.seenAt)
         _state.value = newState
@@ -169,8 +221,15 @@ internal fun mergeParsedState(
     packet: ParsedAirPodsPacket,
     seenAt: Long,
     wearDetectionEnabled: Boolean = true,
+    deviceProfileId: String? = null,
+    capturedAtElapsedMs: Long? = null,
 ): AirPodsState {
-    val sameDevice = sameLogicalAirPods(current, deviceId, packet.model)
+    val sameDevice = sameLogicalAirPods(
+        current = current,
+        incomingDeviceId = deviceId,
+        incomingModel = packet.model,
+        incomingProfileId = deviceProfileId,
+    )
     val model = if (sameDevice && packet.model == AirPodsModel.AIRPODS &&
         current.model != AirPodsModel.UNKNOWN && current.model != AirPodsModel.AIRPODS
     ) {
@@ -251,6 +310,7 @@ internal fun mergeParsedState(
 
     return AirPodsState(
         deviceId = if (sameDevice) current.deviceId ?: deviceId else deviceId,
+        deviceProfileId = if (sameDevice) current.deviceProfileId ?: deviceProfileId else deviceProfileId,
         model = model,
         // A valid AirPods broadcast can omit a battery/lid field (0xF or an
         // out-of-case frame). Do not erase the last real value when a later
@@ -274,6 +334,9 @@ internal fun mergeParsedState(
         detected = true,
         connectionState = connectionState,
         deviceName = current.deviceName.takeIf { sameDevice },
+        a2dpConnected = current.a2dpConnected.takeIf { sameDevice } ?: false,
+        headsetConnected = current.headsetConnected.takeIf { sameDevice } ?: false,
+        aapReady = current.aapReady.takeIf { sameDevice } ?: false,
         lastSeenAt = seenAt,
         confidence = packet.confidence,
         batterySource = if (hasFreshBatterySample) AirPodsDataStore.BatterySource.BLE_PUBLIC_COARSE.name
@@ -293,6 +356,21 @@ internal fun mergeParsedState(
         else current.wearCapturedAt.takeIf { sameDevice },
         wearExpiresAt = if (!wearDetectionEnabled) null else if (packet.wearState != null) seenAt + WEAR_TTL_MS
         else current.wearExpiresAt.takeIf { sameDevice },
+        wearCapturedAtElapsedMs = if (!wearDetectionEnabled) null else if (packet.wearState != null) {
+            capturedAtElapsedMs
+        } else {
+            current.wearCapturedAtElapsedMs.takeIf { sameDevice }
+        },
+        wearExpiresAtElapsedMs = if (!wearDetectionEnabled) null else if (packet.wearState != null) {
+            capturedAtElapsedMs?.plus(WEAR_TTL_MS)
+        } else {
+            current.wearExpiresAtElapsedMs.takeIf { sameDevice }
+        },
+        wearDeviceProfileId = if (!wearDetectionEnabled) null else if (packet.wearState != null) {
+            deviceProfileId
+        } else {
+            current.wearDeviceProfileId.takeIf { sameDevice }
+        },
         leftChargingEvidence = leftEvidence,
         rightChargingEvidence = rightEvidence,
         caseChargingEvidence = caseEvidence,
@@ -356,6 +434,20 @@ private fun AirPodsState.clearChargingIf(clear: Boolean): AirPodsState = if (!cl
     )
 }
 
+private fun AirPodsState.clearWearIf(clear: Boolean): AirPodsState = if (!clear) {
+    this
+} else {
+    copy(
+        wearState = AirPodsWearState.UNKNOWN,
+        wearSource = null,
+        wearCapturedAt = null,
+        wearExpiresAt = null,
+        wearCapturedAtElapsedMs = null,
+        wearExpiresAtElapsedMs = null,
+        wearDeviceProfileId = null,
+    )
+}
+
 /**
  * A fresh wear frame is also fresh evidence that an earbud is not charging
  * while it is out of the case. It invalidates a previous charging=true sample;
@@ -368,6 +460,7 @@ private fun AirPodsState.clearPodChargingWhenOutOfCase(
     AirPodsWearState.LEFT_IN_EAR,
     AirPodsWearState.RIGHT_IN_EAR,
     AirPodsWearState.BOTH_IN_EAR,
+    AirPodsWearState.PARTIAL_IN_EAR,
     AirPodsWearState.NONE_IN_EAR,
     AirPodsWearState.CONFLICT,
     -> copy(
@@ -385,8 +478,11 @@ internal fun sameLogicalAirPods(
     current: AirPodsState,
     incomingDeviceId: String,
     incomingModel: AirPodsModel,
+    incomingProfileId: String? = null,
+    allowModelFallback: Boolean = incomingProfileId == null,
 ): Boolean = current.deviceId == incomingDeviceId ||
-    (current.detected && current.model.isCompatibleWith(incomingModel))
+    (incomingProfileId != null && current.deviceProfileId == incomingProfileId) ||
+    (allowModelFallback && current.detected && current.model.isCompatibleWith(incomingModel))
 
 private const val CHARGING_TTL_MS = 20_000L
 private const val WEAR_TTL_MS = 15_000L

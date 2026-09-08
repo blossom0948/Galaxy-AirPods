@@ -124,6 +124,35 @@ internal object BleScanDiagnostics {
         )
     }
 
+    /**
+     * Records only the shape of an AAP read record.  The payload is never
+     * logged: a key response can arrive on this channel and must remain
+     * private even in a debug build.
+     */
+    fun logAapReadRecord(
+        deviceId: String,
+        bytes: ByteArray,
+        emittedFrames: Int,
+        malformedRecords: Int,
+    ) {
+        if (!BuildConfig.DEBUG) return
+        val packetType = littleEndian16(bytes, 0)
+        val service = littleEndian16(bytes, 2)
+        val command = if (packetType == AapBatteryProtocol.MESSAGE_PACKET_TYPE && bytes.size >= 6) {
+            littleEndian16(bytes, 4)
+        } else {
+            -1
+        }
+        Log.d(
+            TAG,
+            "aap_read deviceHash=${digest(deviceId.toByteArray())} length=${bytes.size} " +
+                "digest=${digest(bytes)} packetType=0x${packetType.toString(16).padStart(4, '0')} " +
+                "service=0x${service.toString(16).padStart(4, '0')} " +
+                "command=${if (command < 0) "none" else "0x${command.toString(16).padStart(4, '0')}"} " +
+                "emittedFrames=$emittedFrames malformedRecords=$malformedRecords",
+        )
+    }
+
     fun logAapRxConnectResponse(deviceId: String, frame: AapFrame.ConnectResponse) {
         if (!BuildConfig.DEBUG) return
         Log.i(
@@ -230,4 +259,9 @@ internal object BleScanDiagnostics {
             .take(16)
 
     private fun Byte.u8(): Int = toInt() and 0xFF
+
+    private fun littleEndian16(bytes: ByteArray, offset: Int): Int {
+        if (bytes.size < offset + 2) return -1
+        return bytes[offset].u8() or (bytes[offset + 1].u8() shl 8)
+    }
 }

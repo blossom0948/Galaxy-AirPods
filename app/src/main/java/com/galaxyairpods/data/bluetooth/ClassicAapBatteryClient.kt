@@ -10,8 +10,10 @@ import com.galaxyairpods.domain.model.AirPodsModel
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.io.IOException
@@ -69,9 +71,6 @@ internal class ClassicAapBatteryClient {
         try {
             connectWithTimeout(socket, deviceId, socketHandle.strategy)
             send(socket, deviceId, "HANDSHAKE", AapBatteryProtocol.handshake)
-            AapBatteryProtocol.notificationProfiles.forEach { (profile, bytes) ->
-                send(socket, deviceId, "NOTIFICATION_$profile", bytes)
-            }
             BleScanDiagnostics.logAapState(deviceId, "READING", "psm=0x1001")
             readLoop(socket, deviceId, onBattery, onWear, onReady)
         } catch (_: CancellationException) {
@@ -161,49 +160,81 @@ internal class ClassicAapBatteryClient {
         onReady: suspend () -> Unit,
     ) = withContext(Dispatchers.IO) {
         val buffer = ByteArray(2048)
-        while (coroutineContext.isActive) {
-            coroutineContext.ensureActive()
-            val length = socket.inputStream.read(buffer)
-            if (length < 0) return@withContext
-            if (length == 0) continue
+        val accumulator = AapFrameAccumulator()
+        var startupComplete = false
+        val startupWatchdog = launch {
+            delay(STARTUP_RESPONSE_TIMEOUT_MS)
+            if (!startupComplete) {
+                BleScanDiagnostics.logAapFailure(deviceId, "handshake", "CONNECT_RESPONSE_TIMEOUT")
+                closeQuietly(socket)
+            }
+        }
+        try {
+            while (coroutineContext.isActive) {
+                coroutineContext.ensureActive()
+                val length = socket.inputStream.read(buffer)
+                if (length < 0) return@withContext
+                if (length == 0) continue
 
-            val frame = AapBatteryProtocol.parseFrame(buffer.copyOf(length))
-            if (frame == null) {
-                BleScanDiagnostics.logAapFailure(deviceId, "read", "MALFORMED_FRAME")
-                continue
+                val accumulated = accumulator.append(buffer.copyOf(length))
+                BleScanDiagnostics.logAapReadRecord(
+                    deviceId = deviceId,
+                    bytes = buffer.copyOf(length),
+                    emittedFrames = accumulated.frames.size,
+                    malformedRecords = accumulated.malformedRecords,
+                )
+                repeat(accumulated.malformedRecords) {
+                    BleScanDiagnostics.logAapFailure(deviceId, "read", "MALFORMED_FRAME")
+                }
+                accumulated.frames.forEach frameLoop@{ rawFrame ->
+                    val frame = AapBatteryProtocol.parseFrame(rawFrame)
+                    if (frame == null) {
+                        BleScanDiagnostics.logAapFailure(deviceId, "read", "MALFORMED_FRAME")
+                        return@frameLoop
+                    }
+                    when (frame) {
+                    is AapFrame.ConnectResponse -> {
+                        BleScanDiagnostics.logAapRxConnectResponse(deviceId, frame)
+                        if (frame.status != 0) {
+                            BleScanDiagnostics.logAapFailure(deviceId, "handshake", "STATUS_${frame.status}")
+                        } else if (!startupComplete) {
+                            // Registration is ordered after the handshake response
+                            // and is performed once per session.
+                            AapBatteryProtocol.notificationProfiles.forEach { (profile, bytes) ->
+                                send(socket, deviceId, "NOTIFICATION_$profile", bytes)
+                            }
+                            send(socket, deviceId, "KEY_REQUEST", AapBatteryProtocol.keyRequest)
+                            startupComplete = true
+                            onReady()
+                        }
+                    }
+                    is AapFrame.Message -> {
+                        BleScanDiagnostics.logAapRxMessage(deviceId, frame)
+                        val battery = AapBatteryProtocol.parseBattery(frame)
+                        if (battery != null) {
+                            BleScanDiagnostics.logAapBattery(deviceId, battery)
+                            onBattery(battery)
+                        }
+                        val wear = AapBatteryProtocol.parseEarDetection(frame)
+                        if (wear != null) {
+                            BleScanDiagnostics.logAapEarDetection(deviceId, wear)
+                            onWear(wear)
+                        } else if (frame.command == AapBatteryProtocol.EAR_DETECTION_COMMAND) {
+                            BleScanDiagnostics.logAapFailure(deviceId, "ear_detection", "MALFORMED_OR_UNKNOWN_STATUS")
+                        }
+                    }
+                    is AapFrame.Other -> {
+                        BleScanDiagnostics.logAapFailure(
+                            deviceId,
+                            "read",
+                            "UNKNOWN_PACKET_0x${frame.packetType.toString(16)}",
+                        )
+                    }
+                }
+                }
             }
-            when (frame) {
-                is AapFrame.ConnectResponse -> {
-                    BleScanDiagnostics.logAapRxConnectResponse(deviceId, frame)
-                    if (frame.status != 0) {
-                        BleScanDiagnostics.logAapFailure(deviceId, "handshake", "STATUS_${frame.status}")
-                    } else {
-                        onReady()
-                    }
-                }
-                is AapFrame.Message -> {
-                    BleScanDiagnostics.logAapRxMessage(deviceId, frame)
-                    val battery = AapBatteryProtocol.parseBattery(frame)
-                    if (battery != null) {
-                        BleScanDiagnostics.logAapBattery(deviceId, battery)
-                        onBattery(battery)
-                    }
-                    val wear = AapBatteryProtocol.parseEarDetection(frame)
-                    if (wear != null) {
-                        BleScanDiagnostics.logAapEarDetection(deviceId, wear)
-                        onWear(wear)
-                    } else if (frame.command == AapBatteryProtocol.EAR_DETECTION_COMMAND) {
-                        BleScanDiagnostics.logAapFailure(deviceId, "ear_detection", "MALFORMED_OR_UNKNOWN_STATUS")
-                    }
-                }
-                is AapFrame.Other -> {
-                    BleScanDiagnostics.logAapFailure(
-                        deviceId,
-                        "read",
-                        "UNKNOWN_PACKET_0x${frame.packetType.toString(16)}",
-                    )
-                }
-            }
+        } finally {
+            startupWatchdog.cancel()
         }
     }
 
@@ -353,11 +384,13 @@ internal class ClassicAapBatteryClient {
 
     private companion object {
         const val CONNECT_TIMEOUT_MS = 5_000L
+        const val STARTUP_RESPONSE_TIMEOUT_MS = 5_000L
     }
 }
 
 internal data class ClassicAapBatteryEvent(
     val deviceId: String,
+    val deviceProfileId: String,
     val model: AirPodsModel,
     val snapshot: AapBatterySnapshot,
     val seenAt: Long,
@@ -365,9 +398,11 @@ internal data class ClassicAapBatteryEvent(
 
 internal data class ClassicAapWearEvent(
     val deviceId: String,
+    val deviceProfileId: String,
     val model: AirPodsModel,
     val primaryPodIsLeft: Boolean?,
     val snapshot: AapEarDetectionSnapshot,
     val wearState: com.galaxyairpods.domain.model.AirPodsWearState?,
     val seenAt: Long,
+    val capturedAtElapsedMs: Long,
 )

@@ -124,6 +124,19 @@ class AirPodsAdvertisementParserTest {
     }
 
     @Test
+    fun onePodInCaseWithOtherPodInEarKeepsTheInEarSide() {
+        // primary=L, one pod in case, primary still in ear.
+        val packet = AppleAirPodsParser.parseManufacturerData(
+            "0719010e2032aab5510000e00ca78a604bd37df4604f2c73e9a7f4".hex(),
+        )
+
+        requireNotNull(packet)
+        assertEquals(AirPodsWearState.LEFT_IN_EAR, packet.wearState)
+        assertEquals(false, packet.leftInCase)
+        assertEquals(true, packet.rightInCase)
+    }
+
+    @Test
     fun treatsReservedPublicBatteryNibblesAsUnknown() {
         val packet = AppleAirPodsParser.parseManufacturerData(
             "0719010e2054bbb5310000e00ca78a604bd37df4604f2c73e9a7f4".hex(),
@@ -155,6 +168,27 @@ class AirPodsAdvertisementParserTest {
         assertEquals(
             true,
             sameLogicalAirPods(state, "CLASSIC-BLUETOOTH-ADDRESS", AirPodsModel.AIRPODS_PRO),
+        )
+    }
+
+    @Test
+    fun doesNotJoinDifferentProfileIdsForNearbyTelemetry() {
+        val state = AirPodsState(
+            deviceId = "classic-address",
+            deviceProfileId = "profile-a",
+            model = AirPodsModel.AIRPODS_PRO,
+            detected = true,
+        )
+
+        assertEquals(
+            false,
+            sameLogicalAirPods(
+                current = state,
+                incomingDeviceId = "rotating-ble-address",
+                incomingModel = AirPodsModel.AIRPODS_PRO,
+                incomingProfileId = "profile-b",
+                allowModelFallback = false,
+            ),
         )
     }
 }

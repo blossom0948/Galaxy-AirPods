@@ -12,5 +12,7 @@ interface AirPodsRepository {
         packet: ParsedAirPodsPacket,
         seenAt: Long = System.currentTimeMillis(),
         wearDetectionEnabled: Boolean = true,
+        deviceProfileId: String? = null,
+        capturedAtElapsedMs: Long? = null,
     )
 }

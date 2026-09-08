@@ -24,6 +24,7 @@ private val Context.airPodsPreferences by preferencesDataStore(name = "airpods_s
 
 /** A persisted Bluetooth connection is never live across a process restart. */
 private val PROCESS_SESSION_ID: String = UUID.randomUUID().toString()
+private const val LIVE_STATE_TTL_MS = 5_000L
 
 class AirPodsDataStore(private val context: Context) {
     /** Source labels are capability metadata, not a precision claim. */
@@ -31,6 +32,7 @@ class AirPodsDataStore(private val context: Context) {
 
     private object Keys {
         val deviceId = stringPreferencesKey("device_id")
+        val deviceProfileId = stringPreferencesKey("device_profile_id")
         val model = stringPreferencesKey("model")
         val modelOverride = stringPreferencesKey("model_override")
         val leftBattery = intPreferencesKey("left_battery")
@@ -47,6 +49,9 @@ class AirPodsDataStore(private val context: Context) {
         val connectionState = stringPreferencesKey("connection_state")
         val liveSessionId = stringPreferencesKey("live_session_id")
         val deviceName = stringPreferencesKey("device_name")
+        val a2dpConnected = booleanPreferencesKey("a2dp_connected")
+        val headsetConnected = booleanPreferencesKey("headset_connected")
+        val aapReady = booleanPreferencesKey("aap_ready")
         val lastSeenAt = longPreferencesKey("last_seen_at")
         val confidence = stringPreferencesKey("confidence")
         val batterySource = stringPreferencesKey("battery_source")
@@ -71,6 +76,9 @@ class AirPodsDataStore(private val context: Context) {
         val wearSource = stringPreferencesKey("wear_source")
         val wearCapturedAt = longPreferencesKey("wear_captured_at")
         val wearExpiresAt = longPreferencesKey("wear_expires_at")
+        val wearCapturedAtElapsedMs = longPreferencesKey("wear_captured_at_elapsed_ms")
+        val wearExpiresAtElapsedMs = longPreferencesKey("wear_expires_at_elapsed_ms")
+        val wearDeviceProfileId = stringPreferencesKey("wear_device_profile_id")
         val autoPopup = booleanPreferencesKey("auto_popup")
         val showOnCaseOpen = booleanPreferencesKey("show_on_case_open")
         val backgroundDetection = booleanPreferencesKey("background_detection")
@@ -85,9 +93,16 @@ class AirPodsDataStore(private val context: Context) {
             if (preferences[Keys.deviceId] == null && preferences[Keys.lastSeenAt] == null) {
                 null
             } else {
-                val liveInThisProcess = preferences[Keys.liveSessionId] == PROCESS_SESSION_ID
+                val lastSeenAt = preferences[Keys.lastSeenAt]
+                val liveInThisProcess = preferences[Keys.liveSessionId] == PROCESS_SESSION_ID &&
+                    lastSeenAt != null &&
+                    System.currentTimeMillis() - lastSeenAt in 0..LIVE_STATE_TTL_MS
                 AirPodsState(
-                    deviceId = preferences[Keys.deviceId],
+                    // Transport addresses are ephemeral identifiers and may be
+                    // rotating BLE private addresses. Never restore or expose
+                    // the old raw address from Preferences.
+                    deviceId = null,
+                    deviceProfileId = preferences[Keys.deviceProfileId],
                     model = preferences[Keys.model]?.let { value ->
                         AirPodsModel.entries.firstOrNull { it.name == value }
                     } ?: AirPodsModel.UNKNOWN,
@@ -113,44 +128,71 @@ class AirPodsDataStore(private val context: Context) {
                         null
                     } ?: com.galaxyairpods.domain.model.AirPodsConnectionState.UNKNOWN,
                     deviceName = preferences[Keys.deviceName],
-                    lastSeenAt = preferences[Keys.lastSeenAt],
+                    a2dpConnected = if (liveInThisProcess) preferences[Keys.a2dpConnected] == true else false,
+                    headsetConnected = if (liveInThisProcess) preferences[Keys.headsetConnected] == true else false,
+                    aapReady = if (liveInThisProcess) preferences[Keys.aapReady] == true else false,
+                    lastSeenAt = lastSeenAt,
                     confidence = preferences[Keys.confidence]?.let { value ->
                         DataConfidence.entries.firstOrNull { it.name == value }
                     } ?: DataConfidence.UNKNOWN,
                     batterySource = preferences[Keys.batterySource],
                     batteryCapturedAt = preferences[Keys.batteryUpdatedAt],
                     primaryPodIsLeft = preferences[Keys.primaryPodIsLeft],
-                    leftChargingEvidence = readChargingEvidence(
-                        preferences,
-                        Keys.leftChargingState,
-                        Keys.leftChargingSource,
-                        Keys.leftChargingCapturedAt,
-                        Keys.leftChargingExpiresAt,
-                        Keys.leftChargingProof,
-                    ),
-                    rightChargingEvidence = readChargingEvidence(
-                        preferences,
-                        Keys.rightChargingState,
-                        Keys.rightChargingSource,
-                        Keys.rightChargingCapturedAt,
-                        Keys.rightChargingExpiresAt,
-                        Keys.rightChargingProof,
-                    ),
-                    caseChargingEvidence = readChargingEvidence(
-                        preferences,
-                        Keys.caseChargingState,
-                        Keys.caseChargingSource,
-                        Keys.caseChargingCapturedAt,
-                        Keys.caseChargingExpiresAt,
-                        Keys.caseChargingProof,
-                    ),
-                    wearState = preferences[Keys.wearState]?.let { value ->
-                        com.galaxyairpods.domain.model.AirPodsWearState.entries
-                            .firstOrNull { it.name == value }
-                    } ?: com.galaxyairpods.domain.model.AirPodsWearState.UNKNOWN,
-                    wearSource = preferences[Keys.wearSource],
-                    wearCapturedAt = preferences[Keys.wearCapturedAt],
-                    wearExpiresAt = preferences[Keys.wearExpiresAt],
+                    // Charging is a live transport observation, not a
+                    // battery fallback. Do not resurrect a previous true
+                    // value after a process/service goes idle.
+                    leftChargingEvidence = if (liveInThisProcess) {
+                        readChargingEvidence(
+                            preferences,
+                            Keys.leftChargingState,
+                            Keys.leftChargingSource,
+                            Keys.leftChargingCapturedAt,
+                            Keys.leftChargingExpiresAt,
+                            Keys.leftChargingProof,
+                        )
+                    } else {
+                        com.galaxyairpods.domain.model.ChargingEvidence()
+                    },
+                    rightChargingEvidence = if (liveInThisProcess) {
+                        readChargingEvidence(
+                            preferences,
+                            Keys.rightChargingState,
+                            Keys.rightChargingSource,
+                            Keys.rightChargingCapturedAt,
+                            Keys.rightChargingExpiresAt,
+                            Keys.rightChargingProof,
+                        )
+                    } else {
+                        com.galaxyairpods.domain.model.ChargingEvidence()
+                    },
+                    caseChargingEvidence = if (liveInThisProcess) {
+                        readChargingEvidence(
+                            preferences,
+                            Keys.caseChargingState,
+                            Keys.caseChargingSource,
+                            Keys.caseChargingCapturedAt,
+                            Keys.caseChargingExpiresAt,
+                            Keys.caseChargingProof,
+                        )
+                    } else {
+                        com.galaxyairpods.domain.model.ChargingEvidence()
+                    },
+                    wearState = preferences[Keys.wearState]
+                        .takeIf { liveInThisProcess }
+                        ?.let { value ->
+                            com.galaxyairpods.domain.model.AirPodsWearState.entries
+                                .firstOrNull { it.name == value }
+                        }
+                        ?: com.galaxyairpods.domain.model.AirPodsWearState.UNKNOWN,
+                    wearSource = preferences[Keys.wearSource].takeIf { liveInThisProcess },
+                    wearCapturedAt = preferences[Keys.wearCapturedAt].takeIf { liveInThisProcess },
+                    wearExpiresAt = preferences[Keys.wearExpiresAt].takeIf { liveInThisProcess },
+                    wearCapturedAtElapsedMs = preferences[Keys.wearCapturedAtElapsedMs]
+                        .takeIf { liveInThisProcess },
+                    wearExpiresAtElapsedMs = preferences[Keys.wearExpiresAtElapsedMs]
+                        .takeIf { liveInThisProcess },
+                    wearDeviceProfileId = preferences[Keys.wearDeviceProfileId]
+                        .takeIf { liveInThisProcess },
                 ).withResolvedConfidence()
             }
         }
@@ -202,7 +244,11 @@ class AirPodsDataStore(private val context: Context) {
             }
             val preserveKnownFields = storedModel != null && storedModel.isCompatibleWith(state.model)
 
-            preferences.putNullable(Keys.deviceId, state.deviceId)
+            // The raw Bluetooth address is an in-memory transport handle only.
+            // Remove the legacy key so older installations are migrated away
+            // from plaintext address persistence.
+            preferences.remove(Keys.deviceId)
+            preferences.putNullable(Keys.deviceProfileId, state.deviceProfileId)
             preferences[Keys.model] = state.model.name
             preferences.putNullablePreserving(Keys.leftBattery, state.leftBattery, preserveKnownFields)
             preferences.putNullablePreserving(Keys.rightBattery, state.rightBattery, preserveKnownFields)
@@ -219,6 +265,9 @@ class AirPodsDataStore(private val context: Context) {
             preferences[Keys.connectionState] = state.connectionState.name
             preferences[Keys.liveSessionId] = PROCESS_SESSION_ID
             preferences.putNullablePreserving(Keys.deviceName, state.deviceName, preserveKnownFields)
+            preferences[Keys.a2dpConnected] = state.a2dpConnected
+            preferences[Keys.headsetConnected] = state.headsetConnected
+            preferences[Keys.aapReady] = state.aapReady
             preferences.putNullable(Keys.lastSeenAt, state.lastSeenAt)
             preferences[Keys.confidence] = state.confidence.name
             preferences.putNullable(Keys.primaryPodIsLeft, state.primaryPodIsLeft)
@@ -276,6 +325,9 @@ class AirPodsDataStore(private val context: Context) {
             preferences.putNullable(Keys.wearSource, state.wearSource)
             preferences.putNullable(Keys.wearCapturedAt, state.wearCapturedAt)
             preferences.putNullable(Keys.wearExpiresAt, state.wearExpiresAt)
+            preferences.putNullable(Keys.wearCapturedAtElapsedMs, state.wearCapturedAtElapsedMs)
+            preferences.putNullable(Keys.wearExpiresAtElapsedMs, state.wearExpiresAtElapsedMs)
+            preferences.putNullable(Keys.wearDeviceProfileId, state.wearDeviceProfileId)
         }
     }
 

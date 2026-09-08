@@ -123,6 +123,8 @@ enum class AirPodsWearState {
     LEFT_IN_EAR,
     RIGHT_IN_EAR,
     BOTH_IN_EAR,
+    /** A valid one-ear observation where the physical side is not proven. */
+    PARTIAL_IN_EAR,
     NONE_IN_EAR,
     IN_CASE,
     UNKNOWN,
@@ -134,6 +136,8 @@ enum class AirPodsWearState {
  */
 data class AirPodsState(
     val deviceId: String? = null,
+    /** Stable redacted identity used to join BLE and Classic observations. */
+    val deviceProfileId: String? = null,
     val model: AirPodsModel = AirPodsModel.UNKNOWN,
     val leftBattery: Int? = null,
     val rightBattery: Int? = null,
@@ -152,6 +156,10 @@ data class AirPodsState(
         else -> AirPodsConnectionState.UNKNOWN
     },
     val deviceName: String? = null,
+    /** Live Bluetooth profile evidence; never restored as live after restart. */
+    val a2dpConnected: Boolean = false,
+    val headsetConnected: Boolean = false,
+    val aapReady: Boolean = false,
     val lastSeenAt: Long? = null,
     val confidence: DataConfidence = DataConfidence.UNKNOWN,
     val batterySource: String? = null,
@@ -164,6 +172,9 @@ data class AirPodsState(
     val wearSource: String? = null,
     val wearCapturedAt: Long? = null,
     val wearExpiresAt: Long? = null,
+    val wearCapturedAtElapsedMs: Long? = null,
+    val wearExpiresAtElapsedMs: Long? = null,
+    val wearDeviceProfileId: String? = null,
 ) {
     val hasAnyBattery: Boolean
         get() = leftBattery != null || rightBattery != null || caseBattery != null
@@ -252,9 +263,7 @@ data class AirPodsState(
     }
 
     fun withFreshWear(now: Long = System.currentTimeMillis()): AirPodsState =
-        if (wearState == AirPodsWearState.UNKNOWN ||
-            (wearCapturedAt != null && wearExpiresAt != null && now in wearCapturedAt..wearExpiresAt)
-        ) {
+        if (wearState == AirPodsWearState.UNKNOWN || isWearFresh(now)) {
             this
         } else {
             copy(
@@ -262,8 +271,25 @@ data class AirPodsState(
                 wearSource = null,
                 wearCapturedAt = null,
                 wearExpiresAt = null,
+                wearCapturedAtElapsedMs = null,
+                wearExpiresAtElapsedMs = null,
+                wearDeviceProfileId = null,
             )
         }
+
+    private fun isWearFresh(nowEpochMs: Long): Boolean {
+        val hasElapsedEvidence = wearCapturedAtElapsedMs != null || wearExpiresAtElapsedMs != null
+        return if (hasElapsedEvidence) {
+            isWearFreshAtElapsed()
+        } else {
+            wearCapturedAt != null && wearExpiresAt != null &&
+                nowEpochMs in wearCapturedAt..wearExpiresAt
+        }
+    }
+
+    private fun isWearFreshAtElapsed(nowElapsedMs: Long = android.os.SystemClock.elapsedRealtime()): Boolean =
+        wearCapturedAtElapsedMs != null && wearExpiresAtElapsedMs != null &&
+            nowElapsedMs in wearCapturedAtElapsedMs..wearExpiresAtElapsedMs
 
     /** Hide wear telemetry immediately when the user disables the feature. */
     fun withoutWearDetection(): AirPodsState = copy(
@@ -271,6 +297,9 @@ data class AirPodsState(
         wearSource = null,
         wearCapturedAt = null,
         wearExpiresAt = null,
+        wearCapturedAtElapsedMs = null,
+        wearExpiresAtElapsedMs = null,
+        wearDeviceProfileId = null,
     )
 
     companion object {
@@ -288,8 +317,12 @@ enum class BatterySlot(val label: String) {
  * is still being merged in. Live non-null fields always win. */
 fun AirPodsState.mergeKnownValuesFrom(fallback: AirPodsState?): AirPodsState {
     if (fallback == null) return this
-    val sameDevice = deviceId == null || fallback.deviceId == null ||
-        deviceId == fallback.deviceId || model.isCompatibleWith(fallback.model)
+    val sameDevice = when {
+        deviceProfileId != null && fallback.deviceProfileId != null ->
+            deviceProfileId == fallback.deviceProfileId
+        else -> deviceId == null || fallback.deviceId == null ||
+            deviceId == fallback.deviceId || model.isCompatibleWith(fallback.model)
+    }
     if (!sameDevice) return this
 
     return copy(
@@ -297,6 +330,7 @@ fun AirPodsState.mergeKnownValuesFrom(fallback: AirPodsState?): AirPodsState {
             model == AirPodsModel.UNKNOWN || model == AirPodsModel.AIRPODS -> fallback.model
             else -> model
         },
+        deviceProfileId = deviceProfileId ?: fallback.deviceProfileId,
         leftBattery = leftBattery ?: fallback.leftBattery,
         rightBattery = rightBattery ?: fallback.rightBattery,
         caseBattery = caseBattery ?: fallback.caseBattery,
@@ -307,6 +341,9 @@ fun AirPodsState.mergeKnownValuesFrom(fallback: AirPodsState?): AirPodsState {
         rightInCase = rightInCase ?: fallback.rightInCase,
         caseOpen = caseOpen ?: fallback.caseOpen,
         detected = detected || fallback.detected,
+        a2dpConnected = a2dpConnected || fallback.a2dpConnected,
+        headsetConnected = headsetConnected || fallback.headsetConnected,
+        aapReady = aapReady || fallback.aapReady,
         deviceName = deviceName ?: fallback.deviceName,
         lastSeenAt = maxOf(lastSeenAt ?: 0L, fallback.lastSeenAt ?: 0L).takeIf { it > 0L },
         batterySource = batterySource ?: fallback.batterySource,
@@ -323,6 +360,9 @@ fun AirPodsState.mergeKnownValuesFrom(fallback: AirPodsState?): AirPodsState {
         wearSource = wearSource ?: fallback.wearSource,
         wearCapturedAt = wearCapturedAt ?: fallback.wearCapturedAt,
         wearExpiresAt = wearExpiresAt ?: fallback.wearExpiresAt,
+        wearCapturedAtElapsedMs = wearCapturedAtElapsedMs ?: fallback.wearCapturedAtElapsedMs,
+        wearExpiresAtElapsedMs = wearExpiresAtElapsedMs ?: fallback.wearExpiresAtElapsedMs,
+        wearDeviceProfileId = wearDeviceProfileId ?: fallback.wearDeviceProfileId,
     )
 }
 

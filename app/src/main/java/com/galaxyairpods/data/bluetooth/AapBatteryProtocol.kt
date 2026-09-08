@@ -16,12 +16,12 @@ internal object AapBatteryProtocol {
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     )
 
-    /** Known notification profiles, sent once each in this order. */
+    val keyRequest: ByteArray = byteArrayOf(
+        0x04, 0x00, 0x04, 0x00, 0x30, 0x00, 0x05, 0x00,
+    )
+
+    /** Default notification profile, sent once after the connect response. */
     val notificationProfiles: List<Pair<String, ByteArray>> = listOf(
-        "EF" to byteArrayOf(
-            0x04, 0x00, 0x04, 0x00, 0x0F, 0x00,
-            0xFF.toByte(), 0xFF.toByte(), 0xEF.toByte(), 0xFF.toByte(),
-        ),
         "FF" to byteArrayOf(
             0x04, 0x00, 0x04, 0x00, 0x0F, 0x00,
             0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(),

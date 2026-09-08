@@ -198,16 +198,15 @@ class AppleAirPodsParser : AirPodsPacketParser {
             val primaryInEar = if (xorFactor) status and 0x08 != 0 else status and 0x02 != 0
             val secondaryInEar = if (xorFactor) status and 0x02 != 0 else status and 0x08 != 0
             val wearState = when {
-                // A one-pod-in-case frame is still an in-case context. The
-                // component-specific leftInCase/rightInCase fields decide
-                // which charging sample to invalidate; do not report this as
-                // NONE_IN_EAR and clear the pod that is actually charging.
-                bothPodsInCase || thisPodInCase || onePodInCase -> AirPodsWearState.IN_CASE
                 primaryInEar && secondaryInEar -> AirPodsWearState.BOTH_IN_EAR
                 primaryInEar && primaryPodIsLeft -> AirPodsWearState.LEFT_IN_EAR
                 primaryInEar && !primaryPodIsLeft -> AirPodsWearState.RIGHT_IN_EAR
                 secondaryInEar && primaryPodIsLeft -> AirPodsWearState.RIGHT_IN_EAR
                 secondaryInEar && !primaryPodIsLeft -> AirPodsWearState.LEFT_IN_EAR
+                // A one-pod-in-case frame can still contain a valid in-ear
+                // reading for the other pod. Prefer the proven in-ear side;
+                // only use IN_CASE when neither pod is in an ear.
+                bothPodsInCase || thisPodInCase || onePodInCase -> AirPodsWearState.IN_CASE
                 else -> AirPodsWearState.NONE_IN_EAR
             }
 

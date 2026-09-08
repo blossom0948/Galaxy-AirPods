@@ -117,6 +117,8 @@ class AirPodsMonitorService : Service() {
                     packet = event.packet,
                     seenAt = event.seenAt,
                     wearDetectionEnabled = wearDetectionEnabled,
+                    deviceProfileId = event.deviceProfileId,
+                    capturedAtElapsedMs = event.capturedAtElapsedMs,
                 )
                 val current = repository.state.value
                 handleWearTransition(previous, current)
@@ -242,12 +244,19 @@ class AirPodsMonitorService : Service() {
         }
     }
 
-    private fun handleWearTransition(previous: AirPodsState, current: AirPodsState) {
+    private suspend fun handleWearTransition(previous: AirPodsState, current: AirPodsState) {
         if (!wearDetectionEnabled || !automaticMediaControlEnabled) return
-        if (previous.wearState == current.wearState && previous.wearCapturedAt == current.wearCapturedAt) {
+        if (previous.deviceProfileId != current.deviceProfileId ||
+            (previous.wearState == current.wearState &&
+                previous.wearCapturedAt == current.wearCapturedAt &&
+                previous.wearCapturedAtElapsedMs == current.wearCapturedAtElapsedMs)
+        ) {
+            if (previous.deviceProfileId != current.deviceProfileId) {
+                mediaPlaybackController.reset()
+            }
             return
         }
-        mediaPlaybackController.onWearStateChanged(current.wearState)
+        mediaPlaybackController.onWearStateChanged(current)
     }
 
     private fun showOverlayIfPermitted() {
