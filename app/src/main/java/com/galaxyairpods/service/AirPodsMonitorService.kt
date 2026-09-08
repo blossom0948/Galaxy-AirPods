@@ -157,6 +157,7 @@ class AirPodsMonitorService : Service() {
                     com.galaxyairpods.domain.model.AirPodsConnectionState.DISCONNECTED,
                     com.galaxyairpods.domain.model.AirPodsConnectionState.UNKNOWN,
                     -> mediaPlaybackController.reset()
+                    com.galaxyairpods.domain.model.AirPodsConnectionState.ANDROID_CONNECTED -> Unit
                     else -> {
                         // NEARBY_ONLY/CONNECTION_PENDING can be a transient
                         // Samsung profile-poll result while a single bud is
