@@ -116,6 +116,24 @@ class UpdateManager(context: Context) {
             .onFailure { _state.value = UpdateState.Error("업데이트 설치를 시작하지 못했습니다") }
     }
 
+    fun markInstallFailure(message: String) {
+        preferences.edit()
+            .remove(ATTEMPTED_VERSION_KEY)
+            .remove(ATTEMPTED_AT_KEY)
+            .remove(BLOCKED_VERSION_KEY)
+            .apply()
+        _state.value = UpdateState.Error(message)
+    }
+
+    fun markInstallSuccess() {
+        preferences.edit()
+            .remove(ATTEMPTED_VERSION_KEY)
+            .remove(ATTEMPTED_AT_KEY)
+            .remove(BLOCKED_VERSION_KEY)
+            .apply()
+        _state.value = UpdateState.UpToDate
+    }
+
     private suspend fun downloadAndInstallLocked(info: UpdateInfo) {
         runCatching {
             val file = downloadAndPrepare(info)
@@ -207,30 +225,32 @@ class UpdateManager(context: Context) {
     private fun download(info: UpdateInfo, target: File) {
         val connection = URL(info.apkUrl).openConnection() as HttpURLConnection
         connection.instanceFollowRedirects = true
+        connection.useCaches = false
         connection.connectTimeout = 15_000
         connection.readTimeout = 60_000
         connection.setRequestProperty("User-Agent", "AirPodsGalaxy/${BuildConfig.VERSION_NAME}")
+        // GitHub release assets are served through a redirect. Do not let a
+        // proxy negotiate gzip/chunked content while we validate the APK bytes.
+        connection.setRequestProperty("Accept-Encoding", "identity")
         connection.connect()
         if (connection.responseCode !in 200..299) error("HTTP ${connection.responseCode}")
 
         val total = connection.contentLengthLong
         var copied = 0L
         val partial = File(target.parentFile, "${target.name}.part")
-        partial.delete()
+        if (partial.exists() && !partial.delete()) {
+            error("이전 다운로드 임시 파일을 정리하지 못했습니다")
+        }
         try {
-            connection.inputStream.use { input ->
-                partial.outputStream().use { output ->
+            connection.inputStream.buffered().use { input ->
+                partial.outputStream().buffered().use { output ->
                     val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                    while (total <= 0L || copied < total) {
+                    while (true) {
                         val count = input.read(buffer)
                         if (count < 0) break
-                        val remaining = if (total > 0L) {
-                            (total - copied).toInt().coerceAtMost(count)
-                        } else {
-                            count
-                        }
-                        output.write(buffer, 0, remaining)
-                        copied += remaining
+                        if (count == 0) continue
+                        output.write(buffer, 0, count)
+                        copied += count
                         val progress = if (total > 0) (copied * 100 / total).toInt() else 0
                         _state.value = UpdateState.Downloading(info, progress.coerceIn(0, 99))
                     }
@@ -238,6 +258,9 @@ class UpdateManager(context: Context) {
             }
             if (total > 0L && copied != total) {
                 error("APK 다운로드가 끝나기 전에 연결이 종료되었습니다")
+            }
+            if (target.exists() && !target.delete()) {
+                error("이전 APK 파일을 교체하지 못했습니다")
             }
             if (!partial.renameTo(target)) error("APK 파일을 저장하지 못했습니다")
             _state.value = UpdateState.Downloading(info, 100)
