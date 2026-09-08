@@ -12,8 +12,8 @@ android {
         applicationId = "com.galaxyairpods"
         minSdk = 29
         targetSdk = 35
-        versionCode = 17
-        versionName = "0.3.5"
+        versionCode = 18
+        versionName = "0.3.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -69,6 +69,10 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.glance:glance-appwidget:1.1.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    // Only used by the narrowly allowlisted Samsung Classic AAP transport
+    // probe; the public API is attempted first and T2 still requires real
+    // AAP packet evidence.
+    implementation("org.lsposed.hiddenapibypass:hiddenapibypass:6.1")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 

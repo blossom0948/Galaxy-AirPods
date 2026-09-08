@@ -6,7 +6,6 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -14,6 +13,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -23,7 +24,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -38,6 +38,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import com.galaxyairpods.domain.model.PopupPhase
 import com.galaxyairpods.domain.model.PopupUiState
 import com.galaxyairpods.domain.motion.MotionLabSettings
@@ -70,7 +72,15 @@ fun AirPodsPopupSurface(
 
     // Phase markers such as SHOWING_BATTERY/IDLE_VISIBLE must not restart the
     // surface animation. Only a new semantic event re-targets the channels.
-    LaunchedEffect(popup.eventId, reducedMotion) {
+    val animationKey = if (popup.phase == PopupPhase.EXITING) popup.eventId else popup.animationId
+    LaunchedEffect(animationKey, reducedMotion) {
+        // Battery samples update content only. They must not restart the card
+        // entrance animation or make the popup jump under the user's finger.
+        if (popup.phase == PopupPhase.UPDATED ||
+            popup.phase == PopupPhase.SHOWING_BATTERY ||
+            popup.phase == PopupPhase.IDLE_VISIBLE ||
+            popup.phase == PopupPhase.DRAGGING
+        ) return@LaunchedEffect
         if (reducedMotion) {
             if (popup.phase == PopupPhase.EXITING) {
                 cardAlpha.snapTo(0f)
@@ -162,7 +172,10 @@ fun AirPodsPopupSurface(
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 16.dp)
+                .padding(horizontal = 16.dp, vertical = 16.dp)
+                .navigationBarsPadding()
+                .heightIn(max = 560.dp)
+                .verticalScroll(rememberScrollState())
                 .graphicsLayer {
                     alpha = cardAlpha.value
                     scaleX = cardScale.value
@@ -243,6 +256,7 @@ fun AirPodsPopupSurface(
                 ) {
                     ProductRenderer(
                         state = popup.deviceState,
+                        artworkHeight = 126.dp,
                         openProgress = openProgress.value,
                         leftLift = leftLift,
                         rightLift = rightLift,
@@ -260,25 +274,16 @@ fun AirPodsPopupSurface(
                 )
 
                 Spacer(Modifier.height(12.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    if (popup.showChargingEmphasis) {
-                        Icon(
-                            Icons.Filled.BatteryChargingFull,
-                            contentDescription = "충전 중",
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(18.dp),
-                        )
-                    }
-                    Text(
-                        text = statusText(popup),
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                Text(
+                    text = statusText(popup),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = "${popup.deviceState.batterySourceLabel()} · ${popup.deviceState.confidence.label}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
@@ -293,10 +298,22 @@ private fun statusText(popup: PopupUiState): String = when (popup.phase) {
     PopupPhase.UPDATED,
     PopupPhase.IDLE_VISIBLE,
     PopupPhase.DRAGGING,
-    -> "배터리 상태가 최신입니다"
-    PopupPhase.CONNECTED -> "연결됨"
+    -> when {
+        !popup.deviceState.hasAnyBattery -> "배터리 상태 확인 중"
+        popup.deviceState.confidence == com.galaxyairpods.domain.model.DataConfidence.STALE ->
+            "마지막 배터리 정보가 오래됨"
+        else -> "배터리 상태가 최신입니다"
+    }
+    PopupPhase.CONNECTED -> popup.deviceState.connectionLabel
     PopupPhase.EXITING -> ""
     PopupPhase.HIDDEN -> ""
 }
 
 private const val MotionLabExitMs = 220L
+
+private fun com.galaxyairpods.domain.model.AirPodsState.batterySourceLabel(): String = when (batterySource) {
+    "AAP_CLASSIC_EXACT" -> "AAP · 정밀 배터리"
+    "BLE_PUBLIC_COARSE" -> "BLE · 공개 광고"
+    "LEGACY_COARSE" -> "Legacy · 낮은 정밀도"
+    else -> "배터리 확인 중"
+}

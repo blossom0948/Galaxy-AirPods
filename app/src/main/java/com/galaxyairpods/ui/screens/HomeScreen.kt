@@ -30,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.galaxyairpods.domain.model.AirPodsState
+import com.galaxyairpods.domain.model.AirPodsConnectionState
 import com.galaxyairpods.permissions.PermissionManager
 import com.galaxyairpods.ui.components.BatteryGrid
 import com.galaxyairpods.ui.components.ProductRenderer
@@ -64,7 +65,7 @@ fun HomeScreen(
             Column(Modifier.weight(1f)) {
                 Text("AirPods Galaxy", style = MaterialTheme.typography.headlineMedium)
                 Text(
-                    if (state.detected) state.model.label else "AirPods 검색 중",
+                    if (state.deviceId != null) state.model.label else "AirPods 검색 중",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -109,9 +110,9 @@ fun HomeScreen(
         ) {
             Column(Modifier.padding(18.dp)) {
                 Text(
-                    if (state.detected) state.connectionLabel else "연결 대기",
+                    state.connectionLabel,
                     style = MaterialTheme.typography.titleLarge,
-                    color = if (state.connected) MaterialTheme.colorScheme.primary
+                    color = if (state.isAndroidConnected) MaterialTheme.colorScheme.primary
                     else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.height(8.dp))
@@ -146,8 +147,13 @@ fun HomeScreen(
 
 @Composable
 private fun StatusDot(state: AirPodsState) {
-    val dotColor = if (state.connected) MaterialTheme.colorScheme.primary
-    else MaterialTheme.colorScheme.onSurfaceVariant
+    val dotColor = when (state.connectionState) {
+        AirPodsConnectionState.ANDROID_CONNECTED -> MaterialTheme.colorScheme.primary
+        AirPodsConnectionState.NEARBY_ONLY,
+        AirPodsConnectionState.OTHER_DEVICE_OR_CONNECTION_PENDING,
+        -> MaterialTheme.colorScheme.tertiary
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
     Surface(
         shape = RoundedCornerShape(20.dp),
         color = dotColor.copy(alpha = 0.14f),

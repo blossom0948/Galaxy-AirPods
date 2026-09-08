@@ -18,11 +18,16 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
+import java.util.UUID
 
 private val Context.airPodsPreferences by preferencesDataStore(name = "airpods_state")
 
+/** A persisted Bluetooth connection is never live across a process restart. */
+private val PROCESS_SESSION_ID: String = UUID.randomUUID().toString()
+
 class AirPodsDataStore(private val context: Context) {
-    enum class BatterySource { BLE, CLASSIC }
+    /** Source labels are capability metadata, not a precision claim. */
+    enum class BatterySource { BLE_PUBLIC_COARSE, AAP_CLASSIC_EXACT, LEGACY_COARSE }
 
     private object Keys {
         val deviceId = stringPreferencesKey("device_id")
@@ -39,11 +44,33 @@ class AirPodsDataStore(private val context: Context) {
         val caseOpen = booleanPreferencesKey("case_open")
         val connected = booleanPreferencesKey("connected")
         val detected = booleanPreferencesKey("detected")
+        val connectionState = stringPreferencesKey("connection_state")
+        val liveSessionId = stringPreferencesKey("live_session_id")
         val deviceName = stringPreferencesKey("device_name")
         val lastSeenAt = longPreferencesKey("last_seen_at")
         val confidence = stringPreferencesKey("confidence")
         val batterySource = stringPreferencesKey("battery_source")
         val batteryUpdatedAt = longPreferencesKey("battery_updated_at")
+        val primaryPodIsLeft = booleanPreferencesKey("primary_pod_is_left")
+        val leftChargingState = stringPreferencesKey("left_charging_state")
+        val rightChargingState = stringPreferencesKey("right_charging_state")
+        val caseChargingState = stringPreferencesKey("case_charging_state")
+        val leftChargingSource = stringPreferencesKey("left_charging_source")
+        val rightChargingSource = stringPreferencesKey("right_charging_source")
+        val caseChargingSource = stringPreferencesKey("case_charging_source")
+        val leftChargingCapturedAt = longPreferencesKey("left_charging_captured_at")
+        val rightChargingCapturedAt = longPreferencesKey("right_charging_captured_at")
+        val caseChargingCapturedAt = longPreferencesKey("case_charging_captured_at")
+        val leftChargingExpiresAt = longPreferencesKey("left_charging_expires_at")
+        val rightChargingExpiresAt = longPreferencesKey("right_charging_expires_at")
+        val caseChargingExpiresAt = longPreferencesKey("case_charging_expires_at")
+        val leftChargingProof = stringPreferencesKey("left_charging_proof")
+        val rightChargingProof = stringPreferencesKey("right_charging_proof")
+        val caseChargingProof = stringPreferencesKey("case_charging_proof")
+        val wearState = stringPreferencesKey("wear_state")
+        val wearSource = stringPreferencesKey("wear_source")
+        val wearCapturedAt = longPreferencesKey("wear_captured_at")
+        val wearExpiresAt = longPreferencesKey("wear_expires_at")
         val autoPopup = booleanPreferencesKey("auto_popup")
         val showOnCaseOpen = booleanPreferencesKey("show_on_case_open")
         val backgroundDetection = booleanPreferencesKey("background_detection")
@@ -56,6 +83,7 @@ class AirPodsDataStore(private val context: Context) {
             if (preferences[Keys.deviceId] == null && preferences[Keys.lastSeenAt] == null) {
                 null
             } else {
+                val liveInThisProcess = preferences[Keys.liveSessionId] == PROCESS_SESSION_ID
                 AirPodsState(
                     deviceId = preferences[Keys.deviceId],
                     model = preferences[Keys.model]?.let { value ->
@@ -70,13 +98,57 @@ class AirPodsDataStore(private val context: Context) {
                     leftInCase = preferences[Keys.leftInCase],
                     rightInCase = preferences[Keys.rightInCase],
                     caseOpen = preferences[Keys.caseOpen],
-                    connected = preferences[Keys.connected] ?: false,
-                    detected = preferences[Keys.detected] ?: false,
+                    // A previous process may have persisted true here. It is
+                    // cache metadata only; the scanner must re-query profiles.
+                    connected = if (liveInThisProcess) preferences[Keys.connected] == true else false,
+                    detected = if (liveInThisProcess) preferences[Keys.detected] == true else false,
+                    connectionState = if (liveInThisProcess) {
+                        preferences[Keys.connectionState]?.let { value ->
+                            com.galaxyairpods.domain.model.AirPodsConnectionState.entries
+                                .firstOrNull { it.name == value }
+                        }
+                    } else {
+                        null
+                    } ?: com.galaxyairpods.domain.model.AirPodsConnectionState.UNKNOWN,
                     deviceName = preferences[Keys.deviceName],
                     lastSeenAt = preferences[Keys.lastSeenAt],
                     confidence = preferences[Keys.confidence]?.let { value ->
                         DataConfidence.entries.firstOrNull { it.name == value }
                     } ?: DataConfidence.UNKNOWN,
+                    batterySource = preferences[Keys.batterySource],
+                    batteryCapturedAt = preferences[Keys.batteryUpdatedAt],
+                    primaryPodIsLeft = preferences[Keys.primaryPodIsLeft],
+                    leftChargingEvidence = readChargingEvidence(
+                        preferences,
+                        Keys.leftChargingState,
+                        Keys.leftChargingSource,
+                        Keys.leftChargingCapturedAt,
+                        Keys.leftChargingExpiresAt,
+                        Keys.leftChargingProof,
+                    ),
+                    rightChargingEvidence = readChargingEvidence(
+                        preferences,
+                        Keys.rightChargingState,
+                        Keys.rightChargingSource,
+                        Keys.rightChargingCapturedAt,
+                        Keys.rightChargingExpiresAt,
+                        Keys.rightChargingProof,
+                    ),
+                    caseChargingEvidence = readChargingEvidence(
+                        preferences,
+                        Keys.caseChargingState,
+                        Keys.caseChargingSource,
+                        Keys.caseChargingCapturedAt,
+                        Keys.caseChargingExpiresAt,
+                        Keys.caseChargingProof,
+                    ),
+                    wearState = preferences[Keys.wearState]?.let { value ->
+                        com.galaxyairpods.domain.model.AirPodsWearState.entries
+                            .firstOrNull { it.name == value }
+                    } ?: com.galaxyairpods.domain.model.AirPodsWearState.UNKNOWN,
+                    wearSource = preferences[Keys.wearSource],
+                    wearCapturedAt = preferences[Keys.wearCapturedAt],
+                    wearExpiresAt = preferences[Keys.wearExpiresAt],
                 ).withResolvedConfidence()
             }
         }
@@ -127,93 +199,70 @@ class AirPodsDataStore(private val context: Context) {
             preferences.putNullablePreserving(Keys.leftInCase, state.leftInCase, preserveKnownFields)
             preferences.putNullablePreserving(Keys.rightInCase, state.rightInCase, preserveKnownFields)
             preferences.putNullablePreserving(Keys.caseOpen, state.caseOpen, preserveKnownFields)
-            preferences[Keys.connected] = state.connected
-            preferences[Keys.detected] = state.detected
+            preferences[Keys.connected] = state.isAndroidConnected
+            preferences[Keys.detected] = state.connectionState !=
+                com.galaxyairpods.domain.model.AirPodsConnectionState.UNKNOWN
+            preferences[Keys.connectionState] = state.connectionState.name
+            preferences[Keys.liveSessionId] = PROCESS_SESSION_ID
             preferences.putNullablePreserving(Keys.deviceName, state.deviceName, preserveKnownFields)
             preferences.putNullable(Keys.lastSeenAt, state.lastSeenAt)
             preferences[Keys.confidence] = state.confidence.name
-            if (batterySource != null && state.hasAnyBattery) {
-                preferences[Keys.batterySource] = batterySource.name
-                preferences[Keys.batteryUpdatedAt] = state.lastSeenAt ?: System.currentTimeMillis()
+            preferences.putNullable(Keys.primaryPodIsLeft, state.primaryPodIsLeft)
+            if (state.hasAnyBattery) {
+                val source = batterySource?.name ?: state.batterySource
+                if (source != null) {
+                    preferences[Keys.batterySource] = source
+                    preferences[Keys.batteryUpdatedAt] = state.batteryCapturedAt
+                        ?: state.lastSeenAt
+                        ?: System.currentTimeMillis()
+                } else {
+                    // Never leave a source/timestamp claiming a battery
+                    // sample that the current state does not identify.
+                    preferences.remove(Keys.batterySource)
+                    preferences.remove(Keys.batteryUpdatedAt)
+                }
+            } else {
+                preferences.remove(Keys.batterySource)
+                preferences.remove(Keys.batteryUpdatedAt)
             }
+
+            writeChargingEvidence(
+                preferences,
+                state.leftChargingEvidence,
+                Keys.leftCharging,
+                Keys.leftChargingState,
+                Keys.leftChargingSource,
+                Keys.leftChargingCapturedAt,
+                Keys.leftChargingExpiresAt,
+                Keys.leftChargingProof,
+            )
+            writeChargingEvidence(
+                preferences,
+                state.rightChargingEvidence,
+                Keys.rightCharging,
+                Keys.rightChargingState,
+                Keys.rightChargingSource,
+                Keys.rightChargingCapturedAt,
+                Keys.rightChargingExpiresAt,
+                Keys.rightChargingProof,
+            )
+            writeChargingEvidence(
+                preferences,
+                state.caseChargingEvidence,
+                Keys.caseCharging,
+                Keys.caseChargingState,
+                Keys.caseChargingSource,
+                Keys.caseChargingCapturedAt,
+                Keys.caseChargingExpiresAt,
+                Keys.caseChargingProof,
+            )
+            preferences.putNullable(Keys.wearState, state.wearState.name.takeIf {
+                state.wearState != com.galaxyairpods.domain.model.AirPodsWearState.UNKNOWN
+            })
+            preferences.putNullable(Keys.wearSource, state.wearSource)
+            preferences.putNullable(Keys.wearCapturedAt, state.wearCapturedAt)
+            preferences.putNullable(Keys.wearExpiresAt, state.wearExpiresAt)
         }
-    }
-
-    /**
-     * Classic Bluetooth fallback used by some AirPods/compatible firmware.
-     * A recent BLE packet remains authoritative whenever it is available.
-     */
-    suspend fun applyClassicBatteryLevel(
-        deviceId: String,
-        deviceName: String,
-        model: AirPodsModel,
-        battery: Int,
-    ) = applyClassicBatterySnapshot(
-        deviceId = deviceId,
-        deviceName = deviceName,
-        model = model,
-        mainBattery = battery,
-    )
-
-    /**
-     * Stores values reported by Android's classic Bluetooth stack. Some
-     * Samsung builds expose individual untethered metadata while others only
-     * expose one headset level, so every field is optional and unknown fields
-     * are deliberately kept instead of being replaced with zero/null.
-     */
-    suspend fun applyClassicBatterySnapshot(
-        deviceId: String,
-        deviceName: String,
-        model: AirPodsModel,
-        mainBattery: Int? = null,
-        leftBattery: Int? = null,
-        rightBattery: Int? = null,
-        caseBattery: Int? = null,
-    ) {
-        val validMain = mainBattery?.takeIf { it in 0..100 }
-        val validLeft = leftBattery?.takeIf { it in 0..100 } ?: validMain
-        val validRight = rightBattery?.takeIf { it in 0..100 } ?: validMain
-        val validCase = caseBattery?.takeIf { it in 0..100 }
-        if (validLeft == null && validRight == null && validCase == null) return
-
-        val now = System.currentTimeMillis()
-        context.airPodsPreferences.edit { preferences ->
-            val storedModel = preferences[Keys.model]?.let { value ->
-                AirPodsModel.entries.firstOrNull { it.name == value }
-            }
-            val storedDeviceId = preferences[Keys.deviceId]
-            val sameDevice = storedDeviceId == null ||
-                storedDeviceId == deviceId ||
-                (storedModel != null && storedModel.isCompatibleWith(model))
-            if (!sameDevice) return@edit
-
-            val source = preferences[Keys.batterySource]
-            val lastBleBatteryAt = preferences[Keys.batteryUpdatedAt] ?: 0L
-            val recentBlePacket = source == BatterySource.BLE.name &&
-                now - lastBleBatteryAt <= BLE_FALLBACK_WINDOW_MS
-            if (recentBlePacket) return@edit
-
-            preferences[Keys.deviceId] = storedDeviceId ?: deviceId
-            preferences[Keys.model] = when {
-                storedModel == null || storedModel == AirPodsModel.UNKNOWN -> model.name
-                storedModel == AirPodsModel.AIRPODS && model != AirPodsModel.AIRPODS -> model.name
-                else -> storedModel.name
-            }
-            validLeft?.let { preferences[Keys.leftBattery] = it }
-            validRight?.let { preferences[Keys.rightBattery] = it }
-            validCase?.let { preferences[Keys.caseBattery] = it }
-            preferences[Keys.connected] = true
-            preferences[Keys.detected] = true
-            preferences[Keys.deviceName] = deviceName
-            preferences[Keys.lastSeenAt] = now
-            preferences[Keys.confidence] = DataConfidence.LIVE.name
-            preferences[Keys.batterySource] = BatterySource.CLASSIC.name
-            preferences[Keys.batteryUpdatedAt] = now
-        }
-    }
-
-    companion object {
-        private const val BLE_FALLBACK_WINDOW_MS = 2 * 60 * 1000L
     }
 
     suspend fun setAutoPopup(enabled: Boolean) {
@@ -238,6 +287,58 @@ class AirPodsDataStore(private val context: Context) {
             else preferences[Keys.modelOverride] = model.name
         }
     }
+}
+
+private fun readChargingEvidence(
+    preferences: Preferences,
+    stateKey: Preferences.Key<String>,
+    sourceKey: Preferences.Key<String>,
+    capturedAtKey: Preferences.Key<Long>,
+    expiresAtKey: Preferences.Key<Long>,
+    proofKey: Preferences.Key<String>,
+): com.galaxyairpods.domain.model.ChargingEvidence =
+    com.galaxyairpods.domain.model.ChargingEvidence(
+        state = preferences[stateKey]?.let { value ->
+            com.galaxyairpods.domain.model.ChargingState.entries.firstOrNull { it.name == value }
+        } ?: com.galaxyairpods.domain.model.ChargingState.UNKNOWN,
+        source = preferences[sourceKey],
+        capturedAt = preferences[capturedAtKey],
+        expiresAt = preferences[expiresAtKey],
+        proof = preferences[proofKey],
+    )
+
+private fun writeChargingEvidence(
+    preferences: MutablePreferences,
+    evidence: com.galaxyairpods.domain.model.ChargingEvidence,
+    rawChargingKey: Preferences.Key<Boolean>,
+    stateKey: Preferences.Key<String>,
+    sourceKey: Preferences.Key<String>,
+    capturedAtKey: Preferences.Key<Long>,
+    expiresAtKey: Preferences.Key<Long>,
+    proofKey: Preferences.Key<String>,
+) {
+    // Do not preserve an old true value when a new sample does not contain
+    // charging proof. Clearing all fields makes stale state impossible to
+    // resurrect on the next process start.
+    if (evidence.state == com.galaxyairpods.domain.model.ChargingState.UNKNOWN ||
+        evidence.source == null || evidence.capturedAt == null ||
+        evidence.expiresAt == null || evidence.proof == null
+    ) {
+        preferences.remove(rawChargingKey)
+        preferences.remove(stateKey)
+        preferences.remove(sourceKey)
+        preferences.remove(capturedAtKey)
+        preferences.remove(expiresAtKey)
+        preferences.remove(proofKey)
+        return
+    }
+
+    preferences[rawChargingKey] = evidence.state == com.galaxyairpods.domain.model.ChargingState.CHARGING
+    preferences[stateKey] = evidence.state.name
+    preferences[sourceKey] = evidence.source
+    preferences[capturedAtKey] = evidence.capturedAt
+    preferences[expiresAtKey] = evidence.expiresAt
+    preferences[proofKey] = evidence.proof
 }
 
 private fun <T> MutablePreferences.putNullable(key: Preferences.Key<T>, value: T?) {

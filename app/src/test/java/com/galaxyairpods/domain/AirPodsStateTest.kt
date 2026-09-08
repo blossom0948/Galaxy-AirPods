@@ -2,6 +2,9 @@ package com.galaxyairpods.domain
 
 import com.galaxyairpods.domain.model.AirPodsModel
 import com.galaxyairpods.domain.model.AirPodsState
+import com.galaxyairpods.domain.model.BatterySlot
+import com.galaxyairpods.domain.model.ChargingEvidence
+import com.galaxyairpods.domain.model.ChargingState
 import com.galaxyairpods.domain.model.DataConfidence
 import com.galaxyairpods.domain.model.mergeKnownValuesFrom
 import org.junit.Assert.assertEquals
@@ -51,5 +54,28 @@ class AirPodsStateTest {
         assertEquals(70, merged.rightBattery)
         assertEquals(60, merged.caseBattery)
         assertEquals(true, merged.connected)
+    }
+
+    @Test
+    fun staleChargingDoesNotSurviveResolution() {
+        val now = 1_000_000L
+        val state = AirPodsState(
+            leftBattery = 50,
+            batteryCapturedAt = now,
+            confidence = DataConfidence.LIVE,
+            leftCharging = true,
+            leftChargingEvidence = ChargingEvidence(
+                state = ChargingState.CHARGING,
+                source = "AAP_CLASSIC_EXACT",
+                capturedAt = now - 30_000L,
+                expiresAt = now - 1L,
+                proof = "AAP_0x0004",
+            ),
+        )
+
+        val resolved = state.withResolvedConfidence(now)
+
+        assertEquals(null, resolved.chargingFor(BatterySlot.LEFT, now))
+        assertEquals(null, resolved.leftCharging)
     }
 }

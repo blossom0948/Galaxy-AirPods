@@ -5,6 +5,7 @@ import com.galaxyairpods.domain.model.PopupEvent
 import com.galaxyairpods.domain.model.PopupMode
 import com.galaxyairpods.domain.model.PopupPhase
 import com.galaxyairpods.domain.model.PopupUiState
+import com.galaxyairpods.domain.model.AirPodsConnectionState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -30,6 +31,7 @@ class PopupMotionController {
                     },
                     deviceState = event.state,
                     eventId = current.eventId + 1,
+                    animationId = current.animationId + 1,
                     errorMessage = null,
                 )
 
@@ -47,8 +49,12 @@ class PopupMotionController {
 
                 PopupEvent.Connected -> current.copy(
                     phase = PopupPhase.CONNECTED,
-                    deviceState = current.deviceState.copy(connected = true),
+                    deviceState = current.deviceState.copy(
+                        connected = true,
+                        connectionState = AirPodsConnectionState.ANDROID_CONNECTED,
+                    ),
                     eventId = current.eventId + 1,
+                    animationId = current.animationId + 1,
                 )
 
                 is PopupEvent.BatteryUpdated -> current.copy(
@@ -110,6 +116,7 @@ class PopupMotionController {
                 mode = mode,
                 deviceState = state,
                 eventId = current.eventId + 1,
+                animationId = current.animationId + 1,
                 leftRemoved = state.leftInCase == false,
                 rightRemoved = state.rightInCase == false,
                 errorMessage = null,

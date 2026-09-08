@@ -139,12 +139,50 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     modelLabel = displayState.model.label,
                 )
 
-                if (event.connected && shouldShowPopup(previous, current, null)) {
+                val connectionChangedToLive =
+                    current.connectionState == com.galaxyairpods.domain.model.AirPodsConnectionState.ANDROID_CONNECTED &&
+                        previous.connectionState != com.galaxyairpods.domain.model.AirPodsConnectionState.ANDROID_CONNECTED
+                val nearbyDetected = current.connectionState !=
+                    com.galaxyairpods.domain.model.AirPodsConnectionState.DISCONNECTED &&
+                    current.connectionState != com.galaxyairpods.domain.model.AirPodsConnectionState.UNKNOWN &&
+                    current.connectionState != previous.connectionState
+                if (autoPopup.value && (connectionChangedToLive || nearbyDetected)) {
                     if (popupController.state.value.isVisible) {
                         popupController.dispatch(PopupEvent.BatteryUpdated(displayState))
                     } else {
                         popupController.show(displayState)
                     }
+                }
+            }
+        }
+        viewModelScope.launch {
+            scanner.classicBatteryEvents.collect { event ->
+                liveRepository.applyClassicAapBattery(event)
+                val current = liveRepository.state.value
+                val displayState = current.copy(model = modelOverride.value ?: current.model)
+
+                AirPodsWidget.updateState(
+                    context = getApplication(),
+                    left = current.leftBattery,
+                    right = current.rightBattery,
+                    caseBattery = current.caseBattery,
+                    modelLabel = displayState.model.label,
+                )
+
+                // Battery events update an existing surface only. AAP/BLE
+                // acquisition must not create a popup by itself.
+                if (popupController.state.value.isVisible) {
+                    popupController.dispatch(PopupEvent.BatteryUpdated(displayState))
+                }
+            }
+        }
+        viewModelScope.launch {
+            scanner.classicWearEvents.collect {
+                val current = liveRepository.state.value
+                if (popupController.state.value.isVisible) {
+                    popupController.dispatch(
+                        PopupEvent.BatteryUpdated(current.copy(model = modelOverride.value ?: current.model)),
+                    )
                 }
             }
         }
@@ -219,20 +257,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         if (!autoPopup.value) return false
 
         val firstDetection = previous.deviceId == null || previous.deviceId != current.deviceId
-        val connectionChanged = !previous.connected && current.connected
+        val connectionChanged = current.connectionState ==
+            com.galaxyairpods.domain.model.AirPodsConnectionState.ANDROID_CONNECTED &&
+            previous.connectionState != com.galaxyairpods.domain.model.AirPodsConnectionState.ANDROID_CONNECTED
         val caseOpened = currentCaseOpen == true && previous.caseOpen != true
-        val batteryChanged = previous.leftBattery != current.leftBattery ||
-            previous.rightBattery != current.rightBattery ||
-            previous.caseBattery != current.caseBattery
-        val chargingChanged = previous.leftCharging != current.leftCharging ||
-            previous.rightCharging != current.rightCharging ||
-            previous.caseCharging != current.caseCharging
 
         return firstDetection ||
             connectionChanged ||
-            (caseOpened && showOnCaseOpen.value) ||
-            batteryChanged ||
-            chargingChanged
+            (caseOpened && showOnCaseOpen.value)
     }
 
     private fun startBackgroundServiceIfReady() {

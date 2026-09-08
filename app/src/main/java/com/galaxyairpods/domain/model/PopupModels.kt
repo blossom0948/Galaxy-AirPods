@@ -38,6 +38,7 @@ data class PopupUiState(
     val mode: PopupMode = PopupMode.KNOWN_DEVICE_STATUS,
     val deviceState: AirPodsState = AirPodsState.empty(),
     val eventId: Long = 0L,
+    val animationId: Long = 0L,
     val leftRemoved: Boolean = false,
     val rightRemoved: Boolean = false,
     val showChargingEmphasis: Boolean = false,

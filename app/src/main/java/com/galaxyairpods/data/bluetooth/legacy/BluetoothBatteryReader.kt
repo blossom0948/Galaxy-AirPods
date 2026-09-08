@@ -1,4 +1,4 @@
-package com.galaxyairpods.data.bluetooth
+package com.galaxyairpods.data.bluetooth.legacy
 
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothDevice
@@ -6,13 +6,12 @@ import android.os.Build
 import java.nio.charset.StandardCharsets
 
 /**
- * Reads the battery value cached by Android's Bluetooth stack.
+ * Optional legacy compatibility reader.
  *
- * Android keeps this API hidden even though Settings uses it for the
- * `android.bluetooth.device.action.BATTERY_LEVEL_CHANGED` feature. Samsung's
- * stack can have a valid value here while it does not deliver the broadcast
- * or the HFP vendor event to third-party apps, so this is an important
- * fallback for already-connected headsets.
+ * This reads values cached by a framework/OEM Bluetooth stack. It does not
+ * query AirPods and it is intentionally not connected to the primary
+ * acquisition coordinator. Keep it disabled unless a device-specific probe
+ * explicitly enables the legacy adapter.
  */
 internal object BluetoothBatteryReader {
     data class Snapshot(
@@ -33,11 +32,6 @@ internal object BluetoothBatteryReader {
     @SuppressLint("MissingPermission", "PrivateApi")
     fun read(device: BluetoothDevice): Int? = readSnapshot(device).bestAvailable
 
-    /**
-     * Reads every battery field the framework may have cached for an untethered
-     * headset. Samsung exposes these fields on some releases even when the
-     * public app-facing battery broadcast is never sent.
-     */
     @SuppressLint("MissingPermission", "PrivateApi")
     fun readSnapshot(device: BluetoothDevice): Snapshot {
         val main = invokeBatteryLevel(device)
@@ -77,8 +71,10 @@ internal object BluetoothBatteryReader {
     @SuppressLint("PrivateApi")
     private fun readMetadata(device: BluetoothDevice, key: Int): Int? {
         val method = runCatching {
-            BluetoothDevice::class.java.getDeclaredMethod("getMetadata", Int::class.javaPrimitiveType)
-                .apply { isAccessible = true }
+            BluetoothDevice::class.java.getDeclaredMethod(
+                "getMetadata",
+                Int::class.javaPrimitiveType,
+            ).apply { isAccessible = true }
         }.getOrNull() ?: return null
 
         val raw = runCatching { method.invoke(device, key) as? ByteArray }.getOrNull() ?: return null
@@ -88,13 +84,9 @@ internal object BluetoothBatteryReader {
     }
 
     private enum class MetadataKey(val id: Int) {
-        // BluetoothDevice.METADATA_MAIN_BATTERY
         MAIN(18),
-        // BluetoothDevice.METADATA_UNTETHERED_LEFT_BATTERY
         LEFT(10),
-        // BluetoothDevice.METADATA_UNTETHERED_RIGHT_BATTERY
         RIGHT(11),
-        // BluetoothDevice.METADATA_UNTETHERED_CASE_BATTERY
         CASE(12),
     }
 }

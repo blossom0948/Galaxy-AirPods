@@ -4,6 +4,7 @@ import com.galaxyairpods.data.bluetooth.AppleAirPodsParser
 import com.galaxyairpods.data.sameLogicalAirPods
 import com.galaxyairpods.domain.model.AirPodsModel
 import com.galaxyairpods.domain.model.AirPodsState
+import com.galaxyairpods.domain.model.AirPodsWearState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -51,40 +52,31 @@ class AirPodsAdvertisementParserTest {
     }
 
     @Test
-    fun decodesLegacyStatusPrefixWithKnownModel() {
+    fun rejectsLegacyStatusPrefixWithoutPublicProof() {
         val packet = AppleAirPodsParser.parseManufacturerData(
             "0719000e2054aab5310000e00ca78a604bd37df4604f2c73e9a7f4".hex(),
         )
 
-        requireNotNull(packet)
-        assertEquals(AirPodsModel.AIRPODS_PRO, packet.model)
-        assertEquals(50, packet.caseBattery)
-        assertEquals(true, packet.caseOpen)
+        assertNull(packet)
     }
 
     @Test
-    fun decodesPairingModeBatteryAdvertisement() {
+    fun rejectsPairingModeAdvertisementFromPublicTier() {
         // 07 0E + prefix/model/address/unknown/right/left/case/color.
         val packet = AppleAirPodsParser.parseManufacturerData(
             "070e000e200000000000000005060400".hex(),
         )
 
-        requireNotNull(packet)
-        assertEquals(AirPodsModel.AIRPODS_PRO, packet.model)
-        assertEquals(60, packet.leftBattery)
-        assertEquals(50, packet.rightBattery)
-        assertEquals(40, packet.caseBattery)
-        assertNull(packet.caseOpen)
+        assertNull(packet)
     }
 
     @Test
-    fun findsStatusMessageAfterOemManufacturerHeader() {
+    fun rejectsRawAdHeaderWhenOnlyManufacturerValueIsExpected() {
         val packet = AppleAirPodsParser.parseManufacturerData(
             "1bff4c000719010e2054aab5310000e00ca78a604bd37df4604f2c73e9a7f4".hex(),
         )
 
-        requireNotNull(packet)
-        assertEquals(50, packet.caseBattery)
+        assertNull(packet)
     }
 
     @Test
@@ -117,6 +109,29 @@ class AirPodsAdvertisementParserTest {
 
         requireNotNull(packet)
         assertNull(packet.caseOpen)
+    }
+
+    @Test
+    fun onePodInCaseIsNotReportedAsBothOutOfEar() {
+        // status=0x10 means one pod is in the case. The lid byte is not used
+        // here because V4 only trusts it with the stronger in-case bits.
+        val packet = AppleAirPodsParser.parseManufacturerData(
+            "0719010e2010aab5510000e00ca78a604bd37df4604f2c73e9a7f4".hex(),
+        )
+
+        requireNotNull(packet)
+        assertEquals(AirPodsWearState.IN_CASE, packet.wearState)
+    }
+
+    @Test
+    fun treatsReservedPublicBatteryNibblesAsUnknown() {
+        val packet = AppleAirPodsParser.parseManufacturerData(
+            "0719010e2054bbb5310000e00ca78a604bd37df4604f2c73e9a7f4".hex(),
+        )
+
+        requireNotNull(packet)
+        assertNull(packet.leftBattery)
+        assertNull(packet.rightBattery)
     }
 
     @Test

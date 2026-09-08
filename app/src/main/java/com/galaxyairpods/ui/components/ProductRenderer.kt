@@ -18,6 +18,7 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 import com.galaxyairpods.domain.model.AirPodsModel
 import com.galaxyairpods.domain.model.AirPodsState
 import com.galaxyairpods.domain.model.isMax
@@ -27,6 +28,7 @@ import com.galaxyairpods.domain.model.isPro
 fun ProductRenderer(
     state: AirPodsState,
     modifier: Modifier = Modifier,
+    artworkHeight: Dp = 188.dp,
     openProgress: Float = if (state.caseOpen == true) 1f else 0f,
     leftLift: Float = 0f,
     rightLift: Float = 0f,
@@ -34,10 +36,10 @@ fun ProductRenderer(
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .height(188.dp)
+            .height(artworkHeight)
             .semantics { contentDescription = state.model.label + " 제품" },
     ) {
-        Canvas(Modifier.fillMaxWidth().height(188.dp)) {
+        Canvas(Modifier.fillMaxWidth().height(artworkHeight)) {
             if (state.model.isMax) {
                 drawMaxHeadphones()
             } else {

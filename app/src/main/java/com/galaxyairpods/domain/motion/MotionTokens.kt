@@ -4,8 +4,8 @@ package com.galaxyairpods.domain.motion
  * Stable motion values used by the production popup surface.
  */
 object MotionTokens {
-    const val CardInitialYOffsetRatio = 0.22f
-    const val CardInitialScale = 0.972f
+    const val CardInitialYOffsetRatio = 0.12f
+    const val CardInitialScale = 0.94f
     const val CardDamping = 0.90f
     const val CardStiffness = 420f
 
@@ -15,8 +15,8 @@ object MotionTokens {
     const val ProductDamping = 0.86f
     const val ProductStiffness = 360f
 
-    const val BatteryDelayMs = 200L
-    const val BatteryItemStaggerMs = 35L
+    const val BatteryDelayMs = 180L
+    const val BatteryItemStaggerMs = 70L
     const val BatteryInitialYOffsetDp = 6f
 
     const val ExitYOffsetRatio = 0.16f

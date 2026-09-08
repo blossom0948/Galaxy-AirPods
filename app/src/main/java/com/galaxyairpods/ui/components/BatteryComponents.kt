@@ -17,6 +17,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -39,6 +40,13 @@ fun BatteryGrid(
     reveal: Boolean = true,
     staggerMs: Long = 35L,
 ) {
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            now = System.currentTimeMillis()
+            delay(1_000L)
+        }
+    }
     Row(
         modifier = modifier,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -48,7 +56,8 @@ fun BatteryGrid(
                 slot = BatterySlot.LEFT,
                 labelOverride = "헤드폰",
                 battery = state.leftBattery,
-                charging = state.leftCharging == true,
+                charging = state.chargingFor(BatterySlot.LEFT, now),
+                chargingUnknown = state.chargingStatusUnknownFor(BatterySlot.LEFT, now),
                 confidence = state.confidence,
                 reveal = reveal,
                 revealDelayMs = 0L,
@@ -58,7 +67,8 @@ fun BatteryGrid(
             BatteryItem(
                 slot = BatterySlot.LEFT,
                 battery = state.leftBattery,
-                charging = state.leftCharging == true,
+                charging = state.chargingFor(BatterySlot.LEFT, now),
+                chargingUnknown = state.chargingStatusUnknownFor(BatterySlot.LEFT, now),
                 confidence = state.confidence,
                 reveal = reveal,
                 revealDelayMs = 0L,
@@ -67,7 +77,8 @@ fun BatteryGrid(
             BatteryItem(
                 slot = BatterySlot.RIGHT,
                 battery = state.rightBattery,
-                charging = state.rightCharging == true,
+                charging = state.chargingFor(BatterySlot.RIGHT, now),
+                chargingUnknown = state.chargingStatusUnknownFor(BatterySlot.RIGHT, now),
                 confidence = state.confidence,
                 reveal = reveal,
                 revealDelayMs = staggerMs,
@@ -76,7 +87,8 @@ fun BatteryGrid(
             BatteryItem(
                 slot = BatterySlot.CASE,
                 battery = state.caseBattery,
-                charging = state.caseCharging == true,
+                charging = state.chargingFor(BatterySlot.CASE, now),
+                chargingUnknown = state.chargingStatusUnknownFor(BatterySlot.CASE, now),
                 confidence = state.confidence,
                 reveal = reveal,
                 revealDelayMs = staggerMs * 2,
@@ -90,7 +102,8 @@ fun BatteryGrid(
 fun BatteryItem(
     slot: BatterySlot,
     battery: Int?,
-    charging: Boolean,
+    charging: Boolean?,
+    chargingUnknown: Boolean = false,
     confidence: DataConfidence,
     reveal: Boolean,
     revealDelayMs: Long,
@@ -137,7 +150,7 @@ fun BatteryItem(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             BatteryRing(
-                progress = progress,
+                progress = battery?.let { progress },
                 accent = accent,
                 modifier = Modifier.size(40.dp),
             )
@@ -148,8 +161,10 @@ fun BatteryItem(
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha),
             )
-            if (charging) {
+            if (charging == true) {
                 Text("충전 중", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary.copy(alpha = alpha))
+            } else if (chargingUnknown && battery != null) {
+                Text("충전 상태 확인 중", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha))
             } else if (battery == null) {
                 Text("데이터 없음", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha))
             }
@@ -159,7 +174,7 @@ fun BatteryItem(
 
 @Composable
 fun BatteryRing(
-    progress: Float,
+    progress: Float?,
     accent: Color,
     modifier: Modifier = Modifier,
 ) {
@@ -171,12 +186,24 @@ fun BatteryRing(
             useCenter = false,
             style = Stroke(width = 5.dp.toPx()),
         )
-        drawArc(
-            color = accent,
-            startAngle = -90f,
-            sweepAngle = 360f * progress,
-            useCenter = false,
-            style = Stroke(width = 5.dp.toPx()),
-        )
+        // Unknown is intentionally not drawn as an empty 0% ring. A short
+        // neutral dash keeps the state visibly different from a real 0%.
+        if (progress == null) {
+            drawArc(
+                color = accent.copy(alpha = 0.55f),
+                startAngle = -90f,
+                sweepAngle = 72f,
+                useCenter = false,
+                style = Stroke(width = 5.dp.toPx()),
+            )
+        } else {
+            drawArc(
+                color = accent,
+                startAngle = -90f,
+                sweepAngle = 360f * progress,
+                useCenter = false,
+                style = Stroke(width = 5.dp.toPx()),
+            )
+        }
     }
 }

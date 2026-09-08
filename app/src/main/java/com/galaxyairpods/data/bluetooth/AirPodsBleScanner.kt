@@ -5,7 +5,6 @@ import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
-import android.bluetooth.BluetoothHeadset
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
@@ -14,14 +13,13 @@ import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.content.ContextCompat
 import com.galaxyairpods.domain.model.AirPodsModel
+import com.galaxyairpods.domain.model.AirPodsConnectionState
 import com.galaxyairpods.domain.model.ParsedAirPodsPacket
-import com.galaxyairpods.data.persistence.AirPodsDataStore
-import com.galaxyairpods.service.AirPodsSystemReceiver
+import com.galaxyairpods.domain.model.isCompatibleWith
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -49,6 +47,15 @@ data class BluetoothAirPodsEvent(
     val model: AirPodsModel,
     val connected: Boolean,
     val seenAt: Long,
+    val connectionState: AirPodsConnectionState = if (connected) {
+        AirPodsConnectionState.ANDROID_CONNECTED
+    } else {
+        AirPodsConnectionState.UNKNOWN
+    },
+    val a2dpConnected: Boolean = false,
+    val headsetConnected: Boolean = false,
+    val aapReady: Boolean = false,
+    val nearbySeenAt: Long? = null,
 )
 
 class AirPodsBleScanner(private val context: Context) {
@@ -61,8 +68,13 @@ class AirPodsBleScanner(private val context: Context) {
     private val _bluetoothEvents = MutableSharedFlow<BluetoothAirPodsEvent>(replay = 1, extraBufferCapacity = 8)
     val bluetoothEvents: SharedFlow<BluetoothAirPodsEvent> = _bluetoothEvents.asSharedFlow()
 
+    private val _classicBatteryEvents = MutableSharedFlow<ClassicAapBatteryEvent>(replay = 1, extraBufferCapacity = 16)
+    internal val classicBatteryEvents: SharedFlow<ClassicAapBatteryEvent> = _classicBatteryEvents.asSharedFlow()
+
+    private val _classicWearEvents = MutableSharedFlow<ClassicAapWearEvent>(replay = 1, extraBufferCapacity = 16)
+    internal val classicWearEvents: SharedFlow<ClassicAapWearEvent> = _classicWearEvents.asSharedFlow()
+
     private val parserRegistry = AirPodsParserRegistry()
-    private val dataStore = AirPodsDataStore(context.applicationContext)
     private val monitorScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     @Volatile
     private var scanning = false
@@ -72,17 +84,26 @@ class AirPodsBleScanner(private val context: Context) {
     private var pendingScanIntent: PendingIntent? = null
     @Volatile
     private var pendingScanActive = false
-    private var classicBatteryReceiverRegistered = false
     private var directScanFallbackJob: Job? = null
     private var legacyScanFallbackJob: Job? = null
+    private var aapSessionJob: Job? = null
+    private var aapSessionDeviceId: String? = null
     private var legacyScanning = false
     private var directScanIsFiltered = false
-    private val systemBatterySamples = mutableMapOf<String, BatterySample>()
     @Volatile
     private var lastValidatedAt = 0L
-    private val classicBatteryReceiver = AirPodsSystemReceiver()
-    private val classicBatteryVendorReceiver = AirPodsSystemReceiver()
+    @Volatile
+    private var lastValidatedDeviceId: String? = null
+    @Volatile
+    private var lastValidatedModel: AirPodsModel = AirPodsModel.UNKNOWN
+    @Volatile
+    private var lastPrimaryPodIsLeft: Boolean? = null
+    @Volatile
+    private var aapReadyDeviceId: String? = null
+    private val aapWearStabilizer = AapWearStabilizer()
+    private val publicWearStabilizer = WearStateStabilizer()
     private val profileProxies = mutableMapOf<Int, BluetoothProfile>()
+    private val aapBatteryClient = ClassicAapBatteryClient()
     private val bluetoothManager: BluetoothManager? by lazy {
         context.getSystemService(BluetoothManager::class.java)
     }
@@ -108,14 +129,15 @@ class AirPodsBleScanner(private val context: Context) {
 
     private val callback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
-            append(result)
+            append(result, delivery = "DIRECT")
         }
 
         override fun onBatchScanResults(results: MutableList<ScanResult>) {
-            results.forEach(::append)
+            results.forEach { append(it, delivery = "BATCH") }
         }
 
         override fun onScanFailed(errorCode: Int) {
+            BleScanDiagnostics.logScanFailed(errorCode)
             if (directScanIsFiltered && restartUnfilteredScanAfterFailure()) return
             scanning = false
             directScanIsFiltered = false
@@ -147,7 +169,6 @@ class AirPodsBleScanner(private val context: Context) {
             return
         }
 
-        registerClassicBatteryReceiver()
         startConnectionMonitor()
         if (scanning) return
         if (!hasScanPermission()) {
@@ -183,6 +204,13 @@ class AirPodsBleScanner(private val context: Context) {
     @SuppressLint("MissingPermission")
     @Synchronized
     fun stop() {
+        aapBatteryClient.close()
+        aapSessionJob?.cancel()
+        aapSessionJob = null
+        aapSessionDeviceId = null
+        aapReadyDeviceId = null
+        aapWearStabilizer.reset()
+        publicWearStabilizer.reset()
         directScanFallbackJob?.cancel()
         directScanFallbackJob = null
         legacyScanFallbackJob?.cancel()
@@ -208,8 +236,9 @@ class AirPodsBleScanner(private val context: Context) {
         connectionMonitorJob?.cancel()
         connectionMonitorJob = null
         lastBluetoothEvent = null
-        systemBatterySamples.clear()
-        unregisterClassicBatteryReceiver()
+        lastValidatedDeviceId = null
+        lastValidatedModel = AirPodsModel.UNKNOWN
+        lastPrimaryPodIsLeft = null
         closeProfileProxies()
         _status.value = "검색 중지"
     }
@@ -242,6 +271,7 @@ class AirPodsBleScanner(private val context: Context) {
             scanning = true
             directScanIsFiltered = filtered
             _status.value = "AirPods 신호 검색 중"
+            adapter?.let { BleScanDiagnostics.logScannerStarted(it, scanMode, filtered) }
             if (scheduleFallback) scheduleUnfilteredFallback(scanner, scanMode)
             true
         } catch (_: SecurityException) {
@@ -304,12 +334,18 @@ class AirPodsBleScanner(private val context: Context) {
     private fun emitValidatedPacket(deviceId: String, parsed: ParsedAirPodsPacket) {
         val seenAt = System.currentTimeMillis()
         lastValidatedAt = seenAt
+        lastValidatedDeviceId = deviceId
+        lastValidatedModel = parsed.model
+        parsed.primaryPodIsLeft?.let { lastPrimaryPodIsLeft = it }
+        val stabilizedWear = parsed.wearState?.let {
+            publicWearStabilizer.accept(it, seenAt)
+        }
         directScanFallbackJob?.cancel()
         _status.value = "AirPods 신호 감지됨"
         _validatedPackets.tryEmit(
             ValidatedPacketEvent(
                 deviceId = deviceId,
-                packet = parsed,
+                packet = parsed.copy(wearState = stabilizedWear),
                 seenAt = seenAt,
             ),
         )
@@ -333,49 +369,6 @@ class AirPodsBleScanner(private val context: Context) {
             _status.value = "AirPods 신호 검색 중"
             true
         }.getOrDefault(false)
-    }
-
-    @SuppressLint("MissingPermission", "UnspecifiedRegisterReceiverFlag")
-    private fun registerClassicBatteryReceiver() {
-        if (classicBatteryReceiverRegistered) return
-
-        val systemFilter = IntentFilter().apply {
-            addAction(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED)
-            addAction(AirPodsSystemReceiver.HF_INDICATORS_VALUE_CHANGED_ACTION)
-            addAction(AirPodsSystemReceiver.BATTERY_LEVEL_CHANGED_ACTION)
-        }
-        val vendorFilter = IntentFilter().apply {
-            addAction(BluetoothHeadset.ACTION_VENDOR_SPECIFIC_HEADSET_EVENT)
-            addCategory(APPLE_HFP_EVENT_CATEGORY)
-        }
-        runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                context.registerReceiver(
-                    classicBatteryReceiver,
-                    systemFilter,
-                    Context.RECEIVER_EXPORTED,
-                )
-                context.registerReceiver(
-                    classicBatteryVendorReceiver,
-                    vendorFilter,
-                    Context.RECEIVER_EXPORTED,
-                )
-            } else {
-                context.registerReceiver(classicBatteryReceiver, systemFilter)
-                context.registerReceiver(classicBatteryVendorReceiver, vendorFilter)
-            }
-            classicBatteryReceiverRegistered = true
-        }.onFailure {
-            runCatching { context.unregisterReceiver(classicBatteryReceiver) }
-            runCatching { context.unregisterReceiver(classicBatteryVendorReceiver) }
-        }
-    }
-
-    private fun unregisterClassicBatteryReceiver() {
-        if (!classicBatteryReceiverRegistered) return
-        runCatching { context.unregisterReceiver(classicBatteryReceiver) }
-        runCatching { context.unregisterReceiver(classicBatteryVendorReceiver) }
-        classicBatteryReceiverRegistered = false
     }
 
     @SuppressLint("MissingPermission")
@@ -430,14 +423,16 @@ class AirPodsBleScanner(private val context: Context) {
                 android.bluetooth.le.BluetoothLeScanner.EXTRA_LIST_SCAN_RESULT,
             ).orEmpty()
         }
-        results.forEach(::append)
+        results.forEach { append(it, delivery = "PENDING") }
     }
 
-    private fun append(result: ScanResult) {
-        parserRegistry.parse(result)?.let { parsed ->
+    private fun append(result: ScanResult, delivery: String) {
+        val parsed = parserRegistry.parse(result)
+        BleScanDiagnostics.logScanResult(result, delivery, parsed)
+        parsed?.let {
             emitValidatedPacket(
                 deviceId = runCatching { result.device.address }.getOrDefault("unknown"),
-                parsed = parsed,
+                parsed = it,
             )
         } ?: run {
             if (lastBluetoothEvent == null) _status.value = "AirPods 연결 상태 확인 중"
@@ -472,25 +467,39 @@ class AirPodsBleScanner(private val context: Context) {
         if (!hasConnectPermission()) return
         val bluetoothAdapter = adapter ?: return
         if (!bluetoothAdapter.isEnabled) {
+            stopAapSession()
             publishDisconnectedEvent()
             _status.value = "Bluetooth가 꺼져 있습니다"
             return
         }
 
-        val connectedDevices = buildList {
+        val knownDevices = linkedMapOf<String, BluetoothDevice>()
+        val a2dpAddresses = mutableSetOf<String>()
+        val headsetAddresses = mutableSetOf<String>()
+        runCatching {
+            // GATT is useful for identity/candidate discovery but is not an
+            // Android audio connection. Counting it as connected caused the
+            // exact false positive shown in the user's screenshot.
+            bluetoothManager?.getConnectedDevices(BluetoothProfile.GATT)
+                .orEmpty()
+                .forEach { knownDevices[it.address] = it }
+        }
+        val proxies = synchronized(profileProxies) { profileProxies.toMap() }
+        proxies.forEach { (profileId, profile) ->
             runCatching {
-                addAll(bluetoothManager?.getConnectedDevices(BluetoothProfile.GATT).orEmpty())
-            }
-            val proxies = synchronized(profileProxies) { profileProxies.values.toList() }
-            proxies.forEach { profile ->
-                runCatching { addAll(profile.connectedDevices) }
+                profile.connectedDevices.forEach { device ->
+                    knownDevices[device.address] = device
+                    when (profileId) {
+                        BluetoothProfile.A2DP -> a2dpAddresses += device.address
+                        BluetoothProfile.HEADSET -> headsetAddresses += device.address
+                    }
+                }
             }
         }
-            .associateBy { it.address }
         val bondedDevices = runCatching { bluetoothAdapter.bondedDevices }
             .getOrDefault(emptySet())
 
-        val candidates = (bondedDevices + connectedDevices.values)
+        val candidates = (bondedDevices + knownDevices.values)
             .distinctBy { it.address }
             .mapNotNull { device ->
                 val remoteName = device.remoteName()
@@ -499,54 +508,180 @@ class AirPodsBleScanner(private val context: Context) {
                 if (names.isEmpty() || !looksLikeAirPods(device, names)) {
                     return@mapNotNull null
                 }
+                val now = System.currentTimeMillis()
+                val a2dpConnected = a2dpAddresses.contains(device.address)
+                val headsetConnected = headsetAddresses.contains(device.address)
+                val aapReady = aapReadyDeviceId == device.address
+                val nearbyFresh = lastValidatedAt > 0L &&
+                    now - lastValidatedAt <= NEARBY_FRESHNESS_MS &&
+                    (lastValidatedModel == AirPodsModel.UNKNOWN ||
+                        modelFromName(names.joinToString(" ")).isCompatibleWith(lastValidatedModel))
+                val paired = bondedDevices.any { it.address == device.address }
+                val connectionState = resolveAirPodsConnectionState(
+                    BluetoothConnectionEvidence(
+                        a2dpConnected = a2dpConnected,
+                        headsetConnected = headsetConnected,
+                        aapReady = aapReady,
+                        nearbyFresh = nearbyFresh,
+                        paired = paired,
+                        knownBluetoothDevice = knownDevices.containsKey(device.address),
+                    ),
+                )
                 BluetoothAirPodsEvent(
                     deviceId = device.address,
                     deviceName = alias.ifBlank { remoteName },
                     model = modelFromName(names.joinToString(" ")),
-                    connected = connectedDevices.containsKey(device.address),
-                    seenAt = System.currentTimeMillis(),
+                    connected = connectionState == AirPodsConnectionState.ANDROID_CONNECTED,
+                    seenAt = now,
+                    connectionState = connectionState,
+                    a2dpConnected = a2dpConnected,
+                    headsetConnected = headsetConnected,
+                    aapReady = aapReady,
+                    nearbySeenAt = lastValidatedAt.takeIf { nearbyFresh },
                 )
             }
-            .sortedWith(compareByDescending<BluetoothAirPodsEvent> { it.connected }.thenBy { it.deviceId })
+            .sortedWith(
+                compareByDescending<BluetoothAirPodsEvent> {
+                    it.connectionState == AirPodsConnectionState.ANDROID_CONNECTED
+                }.thenByDescending {
+                    it.connectionState == AirPodsConnectionState.OTHER_DEVICE_OR_CONNECTION_PENDING
+                }.thenBy { it.deviceId },
+            )
 
-        val current = candidates.firstOrNull()
+        val current = candidates.firstOrNull() ?: lastValidatedDeviceId?.let { nearbyDeviceId ->
+            if (lastValidatedAt > 0L &&
+                System.currentTimeMillis() - lastValidatedAt <= NEARBY_FRESHNESS_MS
+            ) {
+                BluetoothAirPodsEvent(
+                    deviceId = nearbyDeviceId,
+                    deviceName = "AirPods",
+                    model = lastValidatedModel,
+                    connected = false,
+                    seenAt = System.currentTimeMillis(),
+                    connectionState = AirPodsConnectionState.NEARBY_ONLY,
+                    nearbySeenAt = lastValidatedAt,
+                )
+            } else {
+                null
+            }
+        }
         val previous = lastBluetoothEvent
         if (current == null) {
+            stopAapSession()
             publishDisconnectedEvent()
             _status.value = "AirPods 연결 대기"
             return
         }
         lastBluetoothEvent = current
 
-        if (current.connected) {
-            connectedDevices[current.deviceId]?.let { device ->
-                val battery = BluetoothBatteryReader.readSnapshot(device)
-                if (battery.hasValue) {
-                    persistSystemBattery(current, battery)
-                }
-            }
-        }
-
-        _status.value = if (current.connected) {
-            "AirPods Bluetooth 연결됨"
-        } else {
-            "AirPods 페어링됨 · 연결 대기"
+        _status.value = when (current.connectionState) {
+            AirPodsConnectionState.ANDROID_CONNECTED -> "AirPods Galaxy 연결됨"
+            AirPodsConnectionState.NEARBY_ONLY -> "AirPods 주변 감지됨"
+            AirPodsConnectionState.OTHER_DEVICE_OR_CONNECTION_PENDING -> "AirPods 다른 기기/연결 대기"
+            AirPodsConnectionState.DISCONNECTED -> "AirPods 연결 끊김"
+            AirPodsConnectionState.UNKNOWN -> "AirPods 연결 상태 확인 중"
         }
 
         val changed = previous == null ||
             previous.deviceId != current.deviceId ||
-            previous.connected != current.connected ||
+            previous.connectionState != current.connectionState ||
+            previous.a2dpConnected != current.a2dpConnected ||
+            previous.headsetConnected != current.headsetConnected ||
+            previous.aapReady != current.aapReady ||
             previous.model != current.model ||
             current.seenAt - previous.seenAt >= EVENT_REFRESH_MS
-        if (changed) _bluetoothEvents.tryEmit(current)
+        if (changed) {
+            BleScanDiagnostics.logBluetoothEvent(current)
+            _bluetoothEvents.tryEmit(current)
+        }
+        if (current.a2dpConnected || current.headsetConnected || current.aapReady) {
+            startAapSession(current)
+        } else if (aapSessionDeviceId == current.deviceId) {
+            stopAapSession()
+        }
+    }
+
+    private fun startAapSession(event: BluetoothAirPodsEvent) {
+        if (aapSessionJob?.isActive == true && aapSessionDeviceId == event.deviceId) return
+        stopAapSession()
+        val bluetoothAdapter = adapter ?: return
+        val device = runCatching { bluetoothAdapter.getRemoteDevice(event.deviceId) }.getOrNull() ?: return
+        aapSessionDeviceId = event.deviceId
+        aapWearStabilizer.reset()
+        aapSessionJob = monitorScope.launch {
+            // Keep one bounded session alive while the classic profile remains
+            // connected. If Samsung rejects the public socket or the AirPods
+            // close it, retry slowly without flooding the accessory.
+            while (isActive && aapSessionDeviceId == event.deviceId) {
+                aapBatteryClient.runSession(
+                    device = device,
+                    deviceId = event.deviceId,
+                    model = event.model,
+                    onBattery = { snapshot ->
+                    _classicBatteryEvents.emit(
+                        ClassicAapBatteryEvent(
+                            deviceId = event.deviceId,
+                            model = event.model,
+                            snapshot = snapshot,
+                            seenAt = System.currentTimeMillis(),
+                        ),
+                    )
+                    },
+                    onWear = { snapshot ->
+                    val seenAt = System.currentTimeMillis()
+                    val primaryPodIsLeft = lastPrimaryPodIsLeft
+                    val stableWearState = aapWearStabilizer.accept(
+                        snapshot = snapshot,
+                        primaryPodIsLeft = primaryPodIsLeft,
+                        seenAt = seenAt,
+                    )
+                    _classicWearEvents.emit(
+                        ClassicAapWearEvent(
+                            deviceId = event.deviceId,
+                            model = event.model,
+                            primaryPodIsLeft = primaryPodIsLeft,
+                            snapshot = snapshot,
+                            wearState = stableWearState,
+                            seenAt = seenAt,
+                        ),
+                    )
+                    },
+                    onReady = {
+                        aapReadyDeviceId = event.deviceId
+                        refreshBluetoothConnection()
+                    },
+                    onClosed = {
+                        if (aapReadyDeviceId == event.deviceId) {
+                            aapReadyDeviceId = null
+                            refreshBluetoothConnection()
+                        }
+                    },
+                )
+                if (isActive) delay(AAP_RETRY_DELAY_MS)
+            }
+        }
+    }
+
+    private fun stopAapSession() {
+        aapSessionDeviceId = null
+        aapReadyDeviceId = null
+        aapWearStabilizer.reset()
+        aapBatteryClient.close()
+        aapSessionJob?.cancel()
+        aapSessionJob = null
     }
 
     private fun publishDisconnectedEvent() {
         val previous = lastBluetoothEvent ?: return
-        if (!previous.connected) return
+        if (previous.connectionState == AirPodsConnectionState.DISCONNECTED) return
         val disconnected = previous.copy(
             connected = false,
             seenAt = System.currentTimeMillis(),
+            connectionState = AirPodsConnectionState.DISCONNECTED,
+            a2dpConnected = false,
+            headsetConnected = false,
+            aapReady = false,
+            nearbySeenAt = null,
         )
         lastBluetoothEvent = disconnected
         _bluetoothEvents.tryEmit(disconnected)
@@ -571,30 +706,6 @@ class AirPodsBleScanner(private val context: Context) {
 
     private fun modelFromName(name: String): AirPodsModel {
         return AirPodsModel.fromBluetoothName(name)
-    }
-
-    private fun persistSystemBattery(
-        event: BluetoothAirPodsEvent,
-        battery: BluetoothBatteryReader.Snapshot,
-    ) {
-        val now = System.currentTimeMillis()
-        val previous = systemBatterySamples[event.deviceId]
-        if (previous != null && previous.battery == battery &&
-            now - previous.seenAt < SYSTEM_BATTERY_REFRESH_MS
-        ) return
-
-        systemBatterySamples[event.deviceId] = BatterySample(battery, now)
-        monitorScope.launch(Dispatchers.IO) {
-            dataStore.applyClassicBatterySnapshot(
-                deviceId = event.deviceId,
-                deviceName = event.deviceName,
-                model = event.model,
-                mainBattery = battery.main,
-                leftBattery = battery.left,
-                rightBattery = battery.right,
-                caseBattery = battery.caseBattery,
-            )
-        }
     }
 
     private fun hasConnectPermission(): Boolean =
@@ -630,20 +741,14 @@ class AirPodsBleScanner(private val context: Context) {
         private const val LEGACY_SCAN_FALLBACK_DELAY_MS = 12_000L
         private const val CONNECTION_POLL_MS = 1_500L
         private const val EVENT_REFRESH_MS = 30_000L
-        private const val SYSTEM_BATTERY_REFRESH_MS = 30_000L
-        private const val APPLE_HFP_EVENT_CATEGORY =
-            "${BluetoothHeadset.VENDOR_SPECIFIC_HEADSET_EVENT_COMPANY_ID_CATEGORY}.76"
+        private const val NEARBY_FRESHNESS_MS = 30_000L
+        private const val AAP_RETRY_DELAY_MS = 30_000L
         private val PROFILE_PROXY_IDS = buildList {
             add(BluetoothProfile.A2DP)
             add(BluetoothProfile.HEADSET)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) add(BluetoothProfile.LE_AUDIO)
         }
     }
-
-    private data class BatterySample(
-        val battery: BluetoothBatteryReader.Snapshot,
-        val seenAt: Long,
-    )
 
     @SuppressLint("MissingPermission")
     private fun closeProfileProxies() {

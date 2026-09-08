@@ -1,0 +1,108 @@
+package com.galaxyairpods.data
+
+import com.galaxyairpods.data.bluetooth.AapBatteryProtocol
+import com.galaxyairpods.data.bluetooth.AapFrame
+import com.galaxyairpods.data.bluetooth.AapEarStatus
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class AapBatteryProtocolTest {
+    @Test
+    fun parsesExactLeftRightAndCaseValues() {
+        val frame = message(
+            0x04, 0x00, 0x04, 0x00, 0x04, 0x00,
+            0x03,
+            0x04, 0x00, 0x62, 0x02, 0x00,
+            0x02, 0x00, 0x4D, 0x01, 0x00,
+            0x08, 0x00, 0x58, 0x02, 0x00,
+        )
+
+        val parsedFrame = AapBatteryProtocol.parseFrame(frame) as AapFrame.Message
+        val parsed = AapBatteryProtocol.parseBattery(parsedFrame)
+
+        assertNotNull(parsed)
+        assertEquals(98, parsed?.left?.percent)
+        assertEquals(77, parsed?.right?.percent)
+        assertEquals(88, parsed?.case?.percent)
+        assertEquals(false, parsed?.left?.charging)
+        assertEquals(true, parsed?.right?.charging)
+        assertEquals(3, parsed?.componentCount)
+    }
+
+    @Test
+    fun rejectsWrongPayloadLengthAndInvalidPercent() {
+        val truncated = message(0x04, 0x00, 0x04, 0x00, 0x04, 0x00, 0x01, 0x04, 0x00)
+        val invalidPercent = message(
+            0x04, 0x00, 0x04, 0x00, 0x04, 0x00, 0x01,
+            0x04, 0x00, 0x7F, 0x02, 0x00,
+        )
+
+        assertNull(AapBatteryProtocol.parseBattery(AapBatteryProtocol.parseFrame(truncated) as AapFrame.Message))
+        assertNull(AapBatteryProtocol.parseBattery(AapBatteryProtocol.parseFrame(invalidPercent) as AapFrame.Message))
+    }
+
+    @Test
+    fun doesNotCopySingleUnknownComponentToEitherEar() {
+        val frame = message(
+            0x04, 0x00, 0x04, 0x00, 0x04, 0x00, 0x01,
+            0x01, 0x00, 0x50, 0x02, 0x00,
+        )
+
+        val parsed = AapBatteryProtocol.parseBattery(AapBatteryProtocol.parseFrame(frame) as AapFrame.Message)
+
+        assertNull(parsed)
+    }
+
+    @Test
+    fun handshakeAndNotificationProfilesHaveExpectedWireShape() {
+        assertEquals(16, AapBatteryProtocol.handshake.size)
+        assertEquals(0x00, AapBatteryProtocol.handshake[0].toInt())
+        assertEquals(0x01, AapBatteryProtocol.handshake[4].toInt())
+        assertEquals(2, AapBatteryProtocol.notificationProfiles.size)
+        assertTrue(AapBatteryProtocol.notificationProfiles.all { it.second.size == 10 })
+    }
+
+    @Test
+    fun parsesStrictEarDetectionPayload() {
+        val frame = message(
+            0x04, 0x00, 0x04, 0x00, 0x06, 0x00,
+            0x00, 0x01,
+        )
+
+        val parsed = AapBatteryProtocol.parseEarDetection(
+            AapBatteryProtocol.parseFrame(frame) as AapFrame.Message,
+        )
+
+        assertEquals(AapEarStatus.IN_EAR, parsed?.primary)
+        assertEquals(AapEarStatus.OUT_OF_EAR, parsed?.secondary)
+    }
+
+    @Test
+    fun rejectsEarDetectionWithUnknownStatusOrExtraBytes() {
+        val unknownStatus = message(
+            0x04, 0x00, 0x04, 0x00, 0x06, 0x00,
+            0x00, 0x03,
+        )
+        val extraByte = message(
+            0x04, 0x00, 0x04, 0x00, 0x06, 0x00,
+            0x00, 0x01, 0x00,
+        )
+
+        assertNull(
+            AapBatteryProtocol.parseEarDetection(
+                AapBatteryProtocol.parseFrame(unknownStatus) as AapFrame.Message,
+            ),
+        )
+        assertNull(
+            AapBatteryProtocol.parseEarDetection(
+                AapBatteryProtocol.parseFrame(extraByte) as AapFrame.Message,
+            ),
+        )
+    }
+
+    private fun message(vararg values: Int): ByteArray =
+        values.map { it.toByte() }.toByteArray()
+}

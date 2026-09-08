@@ -1,7 +1,7 @@
 package com.galaxyairpods.data
 
-import com.galaxyairpods.data.bluetooth.parseIphoneAccessoryBattery
-import com.galaxyairpods.data.bluetooth.parseXEventBattery
+import com.galaxyairpods.data.bluetooth.legacy.parseIphoneAccessoryBattery
+import com.galaxyairpods.data.bluetooth.legacy.parseXEventBattery
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test

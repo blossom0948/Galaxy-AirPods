@@ -63,6 +63,8 @@ class AirPodsMonitorService : Service() {
             return
         }
         observePackets()
+        observeClassicAapBattery()
+        observeClassicAapWear()
         observeBluetoothConnections()
         observePersistedBatteryFallback()
         startAutomaticUpdateChecks()
@@ -71,7 +73,6 @@ class AirPodsMonitorService : Service() {
 
     private fun observePersistedBatteryFallback() {
         serviceScope.launch {
-            var previousDisplayState: AirPodsState? = null
             dataStore.latestDisplayState.collect { stored ->
                 if (stored == null) return@collect
                 val live = repository.state.value
@@ -89,19 +90,6 @@ class AirPodsMonitorService : Service() {
                     modelLabel = displayState.model.label,
                 )
 
-                val previous = previousDisplayState
-                val batteryChanged = previous != null && (
-                    previous.leftBattery != displayState.leftBattery ||
-                        previous.rightBattery != displayState.rightBattery ||
-                        previous.caseBattery != displayState.caseBattery ||
-                        previous.leftCharging != displayState.leftCharging ||
-                        previous.rightCharging != displayState.rightCharging ||
-                        previous.caseCharging != displayState.caseCharging
-                    )
-                if (batteryChanged && displayState.hasAnyBattery && dataStore.autoPopup.first()) {
-                    showOverlayIfPermitted()
-                }
-                previousDisplayState = displayState
             }
         }
     }
@@ -135,14 +123,8 @@ class AirPodsMonitorService : Service() {
 
                 val firstDetection = previous.deviceId == null || previous.deviceId != current.deviceId
                 val caseOpened = event.packet.caseOpen == true && previous.caseOpen != true
-                val batteryChanged = previous.leftBattery != current.leftBattery ||
-                    previous.rightBattery != current.rightBattery ||
-                    previous.caseBattery != current.caseBattery
-                val chargingChanged = previous.leftCharging != current.leftCharging ||
-                    previous.rightCharging != current.rightCharging ||
-                    previous.caseCharging != current.caseCharging
                 val showPopup = dataStore.autoPopup.first() &&
-                    (firstDetection || batteryChanged || chargingChanged ||
+                    (firstDetection ||
                         (caseOpened && dataStore.showOnCaseOpen.first()))
 
                 if (showPopup) {
@@ -170,25 +152,77 @@ class AirPodsMonitorService : Service() {
                     modelLabel = displayState.model.label,
                 )
 
-                val connectedNow = event.connected && !previous.connected
-                // Wait for the first real battery sample before showing a
-                // background popup. The persisted-battery observer above will
-                // show it as soon as Samsung's HFP/metadata path delivers the
-                // value, instead of displaying an empty popup and losing the
-                // useful update.
-                if (connectedNow && displayState.hasAnyBattery) showOverlayIfPermitted()
+                val connectedNow = event.connectionState ==
+                    com.galaxyairpods.domain.model.AirPodsConnectionState.ANDROID_CONNECTED &&
+                    previous.connectionState != com.galaxyairpods.domain.model.AirPodsConnectionState.ANDROID_CONNECTED
+                val nearbyDetected = event.connectionState !=
+                    com.galaxyairpods.domain.model.AirPodsConnectionState.DISCONNECTED &&
+                    event.connectionState != com.galaxyairpods.domain.model.AirPodsConnectionState.UNKNOWN &&
+                    previous.connectionState != event.connectionState
+                // Connection/case events are independent of telemetry. The
+                // overlay must be able to show a loading/unknown battery state
+                // instead of silently disappearing when no battery sample has
+                // arrived yet.
+                if ((connectedNow || nearbyDetected) && dataStore.autoPopup.first()) {
+                    showOverlayIfPermitted()
+                }
+            }
+        }
+    }
+
+    private fun observeClassicAapBattery() {
+        serviceScope.launch {
+            scanner.classicBatteryEvents.collect { event ->
+                repository.applyClassicAapBattery(event)
+                val current = repository.state.value
+                val override = dataStore.modelOverride.first()
+                val displayState = current.copy(model = override ?: current.model)
+
+                updateNotification(displayState)
+                AirPodsWidget.updateState(
+                    context = this@AirPodsMonitorService,
+                    left = displayState.leftBattery,
+                    right = displayState.rightBattery,
+                    caseBattery = displayState.caseBattery,
+                    modelLabel = displayState.model.label,
+                )
+
+            }
+        }
+    }
+
+    private fun observeClassicAapWear() {
+        serviceScope.launch {
+            scanner.classicWearEvents.collect { event ->
+                repository.applyClassicAapWear(event)
+                val current = repository.state.value
+                val override = dataStore.modelOverride.first()
+                val displayState = current.copy(model = override ?: current.model)
+                updateNotification(displayState)
+                AirPodsWidget.updateState(
+                    context = this@AirPodsMonitorService,
+                    left = displayState.leftBattery,
+                    right = displayState.rightBattery,
+                    caseBattery = displayState.caseBattery,
+                    modelLabel = displayState.model.label,
+                )
             }
         }
     }
 
     private fun showOverlayIfPermitted() {
-        if (!Settings.canDrawOverlays(this)) return
+        if (!Settings.canDrawOverlays(this)) {
+            Log.w(TAG, "Overlay unavailable: SYSTEM_ALERT_WINDOW is not granted")
+            return
+        }
         runCatching {
             // This service is launched by our already-running foreground
             // monitor. Starting a second FGS here is rejected on some Samsung
             // builds when the activity is closed, so keep the popup service
             // short-lived and ordinary.
             startService(Intent(this, AirPodsOverlayService::class.java))
+        }.onFailure { error ->
+            Log.e(TAG, "Unable to start overlay service", error)
         }
     }
 
@@ -199,11 +233,7 @@ class AirPodsMonitorService : Service() {
 
     private fun buildNotification(state: AirPodsState): Notification {
         val batteryText = if (!state.hasAnyBattery) {
-            when {
-                state.connected -> "연결됨 · 배터리 정보 대기 중"
-                state.detected -> "페어링됨 · 연결 대기"
-                else -> "AirPods 검색 중"
-            }
+            "${state.connectionLabel} · 배터리 정보 대기 중"
         } else {
             listOf(
                 state.leftBattery?.let { "L " + it + "%" },

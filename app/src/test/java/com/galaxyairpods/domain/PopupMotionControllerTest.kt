@@ -28,6 +28,18 @@ class PopupMotionControllerTest {
 
         assertEquals(PopupPhase.EXITING, controller.state.value.phase)
     }
+
+    @Test
+    fun batteryUpdateKeepsEntranceAnimationIdentity() {
+        val controller = PopupMotionController()
+        controller.show(liveState())
+        val animationId = controller.state.value.animationId
+
+        controller.dispatch(PopupEvent.BatteryUpdated(liveState().copy(leftBattery = 79)))
+
+        assertEquals(animationId, controller.state.value.animationId)
+        assertEquals(PopupPhase.UPDATED, controller.state.value.phase)
+    }
 }
 
 private fun liveState(caseOpen: Boolean? = null) = AirPodsState(

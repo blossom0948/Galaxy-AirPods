@@ -76,6 +76,60 @@ enum class DataConfidence(val label: String) {
 }
 
 /**
+ * Connection is deliberately independent from BLE proximity and persisted
+ * telemetry. A public AirPods advertisement can be visible while the set is
+ * connected to an iPad, or while it is only waiting for an Android profile.
+ */
+enum class AirPodsConnectionState(val label: String) {
+    ANDROID_CONNECTED("Galaxy에 연결됨"),
+    NEARBY_ONLY("주변에서 감지됨"),
+    OTHER_DEVICE_OR_CONNECTION_PENDING("다른 기기에 연결되었거나 연결 대기 중"),
+    DISCONNECTED("연결 끊김"),
+    UNKNOWN("상태 확인 중"),
+}
+
+enum class ChargingState {
+    CHARGING,
+    NOT_CHARGING,
+    UNKNOWN,
+}
+
+/**
+ * Charging is evidence with a shorter lifetime than the battery percentage.
+ * In particular, an old `true` value must never survive a process restart and
+ * appear as a current charging indicator.
+ */
+data class ChargingEvidence(
+    val state: ChargingState = ChargingState.UNKNOWN,
+    val source: String? = null,
+    val capturedAt: Long? = null,
+    val expiresAt: Long? = null,
+    val proof: String? = null,
+) {
+    fun isFresh(now: Long = System.currentTimeMillis()): Boolean =
+        state != ChargingState.UNKNOWN &&
+            source != null &&
+            capturedAt != null &&
+            expiresAt != null &&
+            proof != null &&
+            now >= capturedAt &&
+            now <= expiresAt
+
+    fun resolved(now: Long = System.currentTimeMillis()): ChargingEvidence =
+        if (isFresh(now)) this else ChargingEvidence()
+}
+
+enum class AirPodsWearState {
+    LEFT_IN_EAR,
+    RIGHT_IN_EAR,
+    BOTH_IN_EAR,
+    NONE_IN_EAR,
+    IN_CASE,
+    UNKNOWN,
+    CONFLICT,
+}
+
+/**
  * `null` battery means "not currently known". It must never be rendered as 0%.
  */
 data class AirPodsState(
@@ -92,9 +146,24 @@ data class AirPodsState(
     val caseOpen: Boolean? = null,
     val connected: Boolean = false,
     val detected: Boolean = false,
+    val connectionState: AirPodsConnectionState = when {
+        connected -> AirPodsConnectionState.ANDROID_CONNECTED
+        detected -> AirPodsConnectionState.OTHER_DEVICE_OR_CONNECTION_PENDING
+        else -> AirPodsConnectionState.UNKNOWN
+    },
     val deviceName: String? = null,
     val lastSeenAt: Long? = null,
     val confidence: DataConfidence = DataConfidence.UNKNOWN,
+    val batterySource: String? = null,
+    val batteryCapturedAt: Long? = null,
+    val primaryPodIsLeft: Boolean? = null,
+    val leftChargingEvidence: ChargingEvidence = ChargingEvidence(),
+    val rightChargingEvidence: ChargingEvidence = ChargingEvidence(),
+    val caseChargingEvidence: ChargingEvidence = ChargingEvidence(),
+    val wearState: AirPodsWearState = AirPodsWearState.UNKNOWN,
+    val wearSource: String? = null,
+    val wearCapturedAt: Long? = null,
+    val wearExpiresAt: Long? = null,
 ) {
     val hasAnyBattery: Boolean
         get() = leftBattery != null || rightBattery != null || caseBattery != null
@@ -102,12 +171,11 @@ data class AirPodsState(
     val hasLiveData: Boolean
         get() = confidence == DataConfidence.LIVE
 
+    val isAndroidConnected: Boolean
+        get() = connectionState == AirPodsConnectionState.ANDROID_CONNECTED
+
     val connectionLabel: String
-        get() = when {
-            connected -> "연결됨"
-            detected -> "페어링됨 · 연결 대기"
-            else -> "연결 대기"
-        }
+        get() = connectionState.label
 
     fun batteryFor(slot: BatterySlot): Int? = when (slot) {
         BatterySlot.LEFT -> leftBattery
@@ -115,29 +183,87 @@ data class AirPodsState(
         BatterySlot.CASE -> caseBattery
     }
 
-    fun chargingFor(slot: BatterySlot): Boolean? = when (slot) {
-        BatterySlot.LEFT -> leftCharging
-        BatterySlot.RIGHT -> rightCharging
-        BatterySlot.CASE -> caseCharging
+    fun chargingEvidenceFor(slot: BatterySlot): ChargingEvidence = when (slot) {
+        BatterySlot.LEFT -> leftChargingEvidence
+        BatterySlot.RIGHT -> rightChargingEvidence
+        BatterySlot.CASE -> caseChargingEvidence
     }
+
+    fun chargingFor(
+        slot: BatterySlot,
+        now: Long = System.currentTimeMillis(),
+    ): Boolean? = when (chargingEvidenceFor(slot).resolved(now).state) {
+        ChargingState.CHARGING -> true
+        ChargingState.NOT_CHARGING -> false
+        ChargingState.UNKNOWN -> null
+    }
+
+    fun chargingStatusUnknownFor(
+        slot: BatterySlot,
+        now: Long = System.currentTimeMillis(),
+    ): Boolean = chargingEvidenceFor(slot).state != ChargingState.UNKNOWN &&
+        !chargingEvidenceFor(slot).isFresh(now)
 
     fun withResolvedConfidence(
         now: Long = System.currentTimeMillis(),
         staleAfterMs: Long = 15 * 60 * 1000L,
     ): AirPodsState {
-        val seen = lastSeenAt ?: return copy(confidence = DataConfidence.UNKNOWN)
+        // A profile poll updates lastSeenAt, but it is not a battery sample.
+        // Once a battery exists, only its own capture timestamp can make the
+        // battery confidence LIVE/RECENT/STALE.
+        val seen = when {
+            batteryCapturedAt != null -> batteryCapturedAt
+            hasAnyBattery -> return copy(confidence = DataConfidence.UNKNOWN)
+                .withFreshCharging(now)
+                .withFreshWear(now)
+            else -> lastSeenAt
+        } ?: return copy(confidence = DataConfidence.UNKNOWN).withFreshCharging(now)
         val resolved = when {
             confidence == DataConfidence.UNKNOWN -> DataConfidence.UNKNOWN
             now - seen > staleAfterMs -> DataConfidence.STALE
             else -> confidence
         }
-        val isFresh = now - seen <= staleAfterMs
         return copy(
             confidence = resolved,
-            connected = if (isFresh) connected else false,
-            detected = if (isFresh) detected else false,
+        ).withFreshCharging(now).withFreshWear(now)
+    }
+
+    fun withFreshCharging(now: Long = System.currentTimeMillis()): AirPodsState {
+        fun normalize(raw: Boolean?, evidence: ChargingEvidence): Pair<Boolean?, ChargingEvidence> {
+            val resolved = evidence.resolved(now)
+            return if (resolved.state == ChargingState.UNKNOWN) {
+                null to ChargingEvidence()
+            } else {
+                (resolved.state == ChargingState.CHARGING) to resolved
+            }
+        }
+
+        val (left, leftEvidence) = normalize(leftCharging, leftChargingEvidence)
+        val (right, rightEvidence) = normalize(rightCharging, rightChargingEvidence)
+        val (caseValue, caseEvidence) = normalize(caseCharging, caseChargingEvidence)
+        return copy(
+            leftCharging = left,
+            rightCharging = right,
+            caseCharging = caseValue,
+            leftChargingEvidence = leftEvidence,
+            rightChargingEvidence = rightEvidence,
+            caseChargingEvidence = caseEvidence,
         )
     }
+
+    fun withFreshWear(now: Long = System.currentTimeMillis()): AirPodsState =
+        if (wearState == AirPodsWearState.UNKNOWN ||
+            (wearCapturedAt != null && wearExpiresAt != null && now in wearCapturedAt..wearExpiresAt)
+        ) {
+            this
+        } else {
+            copy(
+                wearState = AirPodsWearState.UNKNOWN,
+                wearSource = null,
+                wearCapturedAt = null,
+                wearExpiresAt = null,
+            )
+        }
 
     companion object {
         fun empty() = AirPodsState()
@@ -145,9 +271,9 @@ data class AirPodsState(
 }
 
 enum class BatterySlot(val label: String) {
-    LEFT("Left"),
-    RIGHT("Right"),
-    CASE("Case"),
+    LEFT("왼쪽"),
+    RIGHT("오른쪽"),
+    CASE("케이스"),
 }
 
 /** Keeps persisted fallback battery values visible while a live profile event
@@ -175,6 +301,20 @@ fun AirPodsState.mergeKnownValuesFrom(fallback: AirPodsState?): AirPodsState {
         detected = detected || fallback.detected,
         deviceName = deviceName ?: fallback.deviceName,
         lastSeenAt = maxOf(lastSeenAt ?: 0L, fallback.lastSeenAt ?: 0L).takeIf { it > 0L },
+        batterySource = batterySource ?: fallback.batterySource,
+        batteryCapturedAt = maxOf(batteryCapturedAt ?: 0L, fallback.batteryCapturedAt ?: 0L)
+            .takeIf { it > 0L },
+        primaryPodIsLeft = primaryPodIsLeft ?: fallback.primaryPodIsLeft,
+        leftChargingEvidence = leftChargingEvidence.takeIf { it.state != ChargingState.UNKNOWN }
+            ?: fallback.leftChargingEvidence,
+        rightChargingEvidence = rightChargingEvidence.takeIf { it.state != ChargingState.UNKNOWN }
+            ?: fallback.rightChargingEvidence,
+        caseChargingEvidence = caseChargingEvidence.takeIf { it.state != ChargingState.UNKNOWN }
+            ?: fallback.caseChargingEvidence,
+        wearState = if (wearState == AirPodsWearState.UNKNOWN) fallback.wearState else wearState,
+        wearSource = wearSource ?: fallback.wearSource,
+        wearCapturedAt = wearCapturedAt ?: fallback.wearCapturedAt,
+        wearExpiresAt = wearExpiresAt ?: fallback.wearExpiresAt,
     )
 }
 
@@ -191,4 +331,8 @@ data class ParsedAirPodsPacket(
     val caseOpen: Boolean?,
     val parserVersion: String,
     val confidence: DataConfidence,
+    /** Public BLE status bit used to map AAP primary/secondary to physical L/R. */
+    val primaryPodIsLeft: Boolean? = null,
+    /** Candidate wear state; the scanner publishes it only after stabilization. */
+    val wearState: AirPodsWearState? = null,
 )
