@@ -8,7 +8,7 @@ Galaxy에서 AirPods의 실제 BLE 상태를 확인하는 Android 앱입니다.
 - 지원 모델의 L/R/케이스 배터리와 충전·케이스 상태를 표시합니다.
 - 앱을 열지 않아도 포그라운드 서비스가 감지를 유지하고, 위젯·알림·오버레이를 갱신합니다.
 - 설정에서 자동 감지 또는 AirPods 세대/Pro/Max 모델을 선택할 수 있습니다.
-- 앱과 백그라운드 감지 서비스가 GitHub의 update.json을 주기적으로 확인하고, 새 Release APK를 검증한 뒤 자동으로 다운로드·설치를 시작합니다.
+- 앱과 백그라운드 감지 서비스가 GitHub의 update.json을 주기적으로 확인하고, raw/API 결과 중 최신 manifest를 선택한 뒤 새 Release APK를 검증하고 자동으로 다운로드·설치를 시작합니다.
 
 지원 모델 모양은 AirPods 1·2·3·4, AirPods 4 ANC, AirPods Pro 1·2·2 USB-C·3, AirPods Max·Max USB-C·Max 2입니다.
 

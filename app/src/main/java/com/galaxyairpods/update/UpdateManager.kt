@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import android.util.Base64
 import com.galaxyairpods.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -71,8 +72,7 @@ class UpdateManager(context: Context) {
             _state.value = UpdateState.Checking
             runCatching {
                 withContext(Dispatchers.IO) {
-                    val manifest = readText(manifestUrl())
-                    parseManifest(manifest)
+                    readLatestManifestInfo()
                 }
             }.onSuccess { info ->
                 if (info.versionCode <= BuildConfig.VERSION_CODE) {
@@ -223,6 +223,28 @@ class UpdateManager(context: Context) {
     private fun readText(urlString: String): String {
         val connection = URL(urlString).openConnection() as HttpURLConnection
         return connection.useConnection { inputStream.reader().use { it.readText() } }
+    }
+
+    /**
+     * GitHub's raw branch endpoint can serve a previous branch revision from
+     * its edge cache for a short period after a release push. The Contents API
+     * returns the current commit's file, so compare both sources and use the
+     * highest version. This prevents a phone from stopping at an intermediate
+     * release just because the raw endpoint is stale.
+     */
+    private fun readLatestManifestInfo(): UpdateInfo {
+        val rawInfo = runCatching { parseManifest(readText(manifestUrl())) }.getOrNull()
+        val apiInfo = runCatching {
+            val response = readText(GITHUB_CONTENTS_URL)
+            val encoded = response.matchString("content") ?: error("GitHub contents 없음")
+            val decoded = Base64.decode(
+                encoded.replace("\\n", ""),
+                Base64.DEFAULT,
+            ).toString(Charsets.UTF_8)
+            parseManifest(decoded)
+        }.getOrNull()
+        return listOfNotNull(rawInfo, apiInfo).maxByOrNull { it.versionCode }
+            ?: error("업데이트 manifest를 읽을 수 없습니다")
     }
 
     private fun download(info: UpdateInfo, target: File) {
@@ -391,6 +413,7 @@ class UpdateManager(context: Context) {
     private fun HttpURLConnection.useConnection(block: HttpURLConnection.() -> String): String {
         connectTimeout = 10_000
         readTimeout = 15_000
+        useCaches = false
         setRequestProperty("User-Agent", "AirPodsGalaxy/${BuildConfig.VERSION_NAME}")
         return try {
             connect()
@@ -413,6 +436,8 @@ class UpdateManager(context: Context) {
         private const val DOWNLOAD_RETRY_DELAY_MS = 500L
         private const val MANIFEST_URL =
             "https://raw.githubusercontent.com/blossom0948/Galaxy-AirPods/main/update.json"
+        private const val GITHUB_CONTENTS_URL =
+            "https://api.github.com/repos/blossom0948/Galaxy-AirPods/contents/update.json?ref=main"
 
         @Volatile
         private var shared: UpdateManager? = null
