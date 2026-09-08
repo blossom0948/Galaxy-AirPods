@@ -46,7 +46,10 @@ class AirPodsMonitorService : Service() {
     private lateinit var scanner: AirPodsBleScanner
     private lateinit var scannerLease: AirPodsScannerLease
     private lateinit var updateManager: UpdateManager
+    private lateinit var mediaPlaybackController: WearMediaPlaybackController
     private var foregroundReady = false
+    @Volatile private var wearDetectionEnabled = true
+    @Volatile private var automaticMediaControlEnabled = true
 
     override fun onCreate() {
         super.onCreate()
@@ -55,6 +58,7 @@ class AirPodsMonitorService : Service() {
         scannerLease = AirPodsScannerHub.acquire(this)
         scanner = scannerLease.scanner
         updateManager = UpdateManager.shared(this)
+        mediaPlaybackController = WearMediaPlaybackController(this)
 
         createNotificationChannel()
         foregroundReady = startForegroundCompat(buildNotification(AirPodsState.empty()))
@@ -67,6 +71,7 @@ class AirPodsMonitorService : Service() {
         observeClassicAapWear()
         observeBluetoothConnections()
         observePersistedBatteryFallback()
+        observeWearSettings()
         startAutomaticUpdateChecks()
         scannerLease.start(android.bluetooth.le.ScanSettings.SCAN_MODE_LOW_LATENCY)
     }
@@ -107,8 +112,14 @@ class AirPodsMonitorService : Service() {
         serviceScope.launch {
             scanner.validatedPackets.collect { event ->
                 val previous = repository.state.value
-                repository.applyParsedPacket(event.deviceId, event.packet, event.seenAt)
+                repository.applyParsedPacket(
+                    deviceId = event.deviceId,
+                    packet = event.packet,
+                    seenAt = event.seenAt,
+                    wearDetectionEnabled = wearDetectionEnabled,
+                )
                 val current = repository.state.value
+                handleWearTransition(previous, current)
                 val override = dataStore.modelOverride.first()
                 val displayState = current.copy(model = override ?: current.model)
 
@@ -140,6 +151,9 @@ class AirPodsMonitorService : Service() {
                 val previous = repository.state.value
                 repository.applyBluetoothConnection(event)
                 val current = repository.state.value
+                if (event.connectionState != com.galaxyairpods.domain.model.AirPodsConnectionState.ANDROID_CONNECTED) {
+                    mediaPlaybackController.reset()
+                }
                 val override = dataStore.modelOverride.first()
                 val displayState = current.copy(model = override ?: current.model)
 
@@ -194,8 +208,11 @@ class AirPodsMonitorService : Service() {
     private fun observeClassicAapWear() {
         serviceScope.launch {
             scanner.classicWearEvents.collect { event ->
+                if (!wearDetectionEnabled) return@collect
+                val previous = repository.state.value
                 repository.applyClassicAapWear(event)
                 val current = repository.state.value
+                handleWearTransition(previous, current)
                 val override = dataStore.modelOverride.first()
                 val displayState = current.copy(model = override ?: current.model)
                 updateNotification(displayState)
@@ -208,6 +225,29 @@ class AirPodsMonitorService : Service() {
                 )
             }
         }
+    }
+
+    private fun observeWearSettings() {
+        serviceScope.launch {
+            dataStore.wearDetectionEnabled.collect { enabled ->
+                wearDetectionEnabled = enabled
+                if (!enabled) mediaPlaybackController.reset()
+            }
+        }
+        serviceScope.launch {
+            dataStore.automaticMediaControlEnabled.collect { enabled ->
+                automaticMediaControlEnabled = enabled
+                if (!enabled) mediaPlaybackController.reset()
+            }
+        }
+    }
+
+    private fun handleWearTransition(previous: AirPodsState, current: AirPodsState) {
+        if (!wearDetectionEnabled || !automaticMediaControlEnabled) return
+        if (previous.wearState == current.wearState && previous.wearCapturedAt == current.wearCapturedAt) {
+            return
+        }
+        mediaPlaybackController.onWearStateChanged(current.wearState)
     }
 
     private fun showOverlayIfPermitted() {

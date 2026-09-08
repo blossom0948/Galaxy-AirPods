@@ -90,7 +90,7 @@ fun AirPodsPopupSurface(
                 cardY.snapTo(0f)
                 cardScale.snapTo(1f)
                 cardAlpha.snapTo(1f)
-                scrimAlpha.snapTo(0.34f)
+                scrimAlpha.snapTo(0.48f)
                 productY.snapTo(0f)
                 productScale.snapTo(1f)
                 productAlpha.snapTo(1f)
@@ -125,7 +125,7 @@ fun AirPodsPopupSurface(
         }
         launch { cardScale.animateTo(1f, spring(settings.cardDamping, settings.cardStiffness)) }
         launch { cardAlpha.animateTo(1f, spring(dampingRatio = 1f, stiffness = 700f)) }
-        launch { scrimAlpha.animateTo(0.34f, spring(dampingRatio = 1f, stiffness = 800f)) }
+        launch { scrimAlpha.animateTo(0.48f, spring(dampingRatio = 1f, stiffness = 800f)) }
 
         launch {
             delay((settings.productDelayMs / settings.playbackSpeed).toLong())
@@ -174,7 +174,7 @@ fun AirPodsPopupSurface(
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 16.dp)
                 .navigationBarsPadding()
-                .heightIn(max = 560.dp)
+                .heightIn(max = 520.dp)
                 .verticalScroll(rememberScrollState())
                 .graphicsLayer {
                     alpha = cardAlpha.value
@@ -215,9 +215,10 @@ fun AirPodsPopupSurface(
                         },
                     )
                 },
-            shape = RoundedCornerShape(32.dp),
+            shape = RoundedCornerShape(28.dp),
             color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 12.dp,
+            tonalElevation = 0.dp,
+            shadowElevation = 16.dp,
         ) {
             Column(Modifier.padding(horizontal = 20.dp, vertical = 16.dp)) {
                 Row(
@@ -229,15 +230,17 @@ fun AirPodsPopupSurface(
                             text = popup.deviceState.model.label,
                             style = MaterialTheme.typography.titleLarge,
                         )
-                        Text(
-                            text = popup.deviceState.connectionLabel,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = if (popup.phase == PopupPhase.CONNECTED) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                        )
+                        Surface(
+                            shape = RoundedCornerShape(50),
+                            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
+                        ) {
+                            Text(
+                                text = popup.deviceState.connectionLabel,
+                                modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
                     }
                     IconButton(onClick = onDismiss) {
                         Icon(Icons.Filled.Close, contentDescription = "팝업 닫기")
@@ -256,7 +259,7 @@ fun AirPodsPopupSurface(
                 ) {
                     ProductRenderer(
                         state = popup.deviceState,
-                        artworkHeight = 126.dp,
+                        artworkHeight = 142.dp,
                         openProgress = openProgress.value,
                         leftLift = leftLift,
                         rightLift = rightLift,

@@ -74,6 +74,8 @@ class AirPodsDataStore(private val context: Context) {
         val autoPopup = booleanPreferencesKey("auto_popup")
         val showOnCaseOpen = booleanPreferencesKey("show_on_case_open")
         val backgroundDetection = booleanPreferencesKey("background_detection")
+        val wearDetectionEnabled = booleanPreferencesKey("wear_detection_enabled")
+        val automaticMediaControlEnabled = booleanPreferencesKey("automatic_media_control_enabled")
         val popupDuration = intPreferencesKey("popup_duration")
     }
 
@@ -168,6 +170,18 @@ class AirPodsDataStore(private val context: Context) {
     val backgroundDetection: Flow<Boolean> = context.airPodsPreferences.data
         .catch { emit(emptyPreferences()) }
         .map { it[Keys.backgroundDetection] ?: true }
+
+    val wearDetectionEnabled: Flow<Boolean> = context.airPodsPreferences.data
+        .catch { emit(emptyPreferences()) }
+        .map { it[Keys.wearDetectionEnabled] ?: true }
+
+    /**
+     * Kept separate from the wear detector so a user can still see wear state
+     * without allowing the app to control another app's playback.
+     */
+    val automaticMediaControlEnabled: Flow<Boolean> = context.airPodsPreferences.data
+        .catch { emit(emptyPreferences()) }
+        .map { it[Keys.automaticMediaControlEnabled] ?: true }
 
     val modelOverride: Flow<AirPodsModel?> = context.airPodsPreferences.data
         .catch { emit(emptyPreferences()) }
@@ -279,6 +293,14 @@ class AirPodsDataStore(private val context: Context) {
 
     suspend fun setBackgroundDetection(enabled: Boolean) {
         context.airPodsPreferences.edit { it[Keys.backgroundDetection] = enabled }
+    }
+
+    suspend fun setWearDetectionEnabled(enabled: Boolean) {
+        context.airPodsPreferences.edit { it[Keys.wearDetectionEnabled] = enabled }
+    }
+
+    suspend fun setAutomaticMediaControlEnabled(enabled: Boolean) {
+        context.airPodsPreferences.edit { it[Keys.automaticMediaControlEnabled] = enabled }
     }
 
     suspend fun setModelOverride(model: AirPodsModel?) {

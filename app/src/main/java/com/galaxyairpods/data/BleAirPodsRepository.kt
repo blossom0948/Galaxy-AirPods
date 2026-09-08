@@ -26,13 +26,26 @@ class BleAirPodsRepository(
     private val _state = MutableStateFlow(AirPodsState.empty())
     override val state: StateFlow<AirPodsState> = _state.asStateFlow()
 
-    override suspend fun applyParsedPacket(deviceId: String, packet: ParsedAirPodsPacket, seenAt: Long) {
-        val newState = mergeParsedState(_state.value, deviceId, packet, seenAt)
+    override suspend fun applyParsedPacket(
+        deviceId: String,
+        packet: ParsedAirPodsPacket,
+        seenAt: Long,
+        wearDetectionEnabled: Boolean,
+    ) {
+        val newState = mergeParsedState(
+            current = _state.value,
+            deviceId = deviceId,
+            packet = packet,
+            seenAt = seenAt,
+            wearDetectionEnabled = wearDetectionEnabled,
+        )
         _state.value = newState
-        val hasBattery = packet.leftBattery != null || packet.rightBattery != null || packet.caseBattery != null
+        val source = newState.batterySource?.let {
+            runCatching { AirPodsDataStore.BatterySource.valueOf(it) }.getOrNull()
+        }
         dataStore.saveState(
             newState,
-            batterySource = AirPodsDataStore.BatterySource.BLE_PUBLIC_COARSE.takeIf { hasBattery },
+            batterySource = source,
         )
     }
 
@@ -155,6 +168,7 @@ internal fun mergeParsedState(
     deviceId: String,
     packet: ParsedAirPodsPacket,
     seenAt: Long,
+    wearDetectionEnabled: Boolean = true,
 ): AirPodsState {
     val sameDevice = sameLogicalAirPods(current, deviceId, packet.model)
     val model = if (sameDevice && packet.model == AirPodsModel.AIRPODS &&
@@ -202,7 +216,38 @@ internal fun mergeParsedState(
             AirPodsConnectionState.OTHER_DEVICE_OR_CONNECTION_PENDING
         else -> AirPodsConnectionState.NEARBY_ONLY
     }
-    val hasBattery = packet.leftBattery != null || packet.rightBattery != null || packet.caseBattery != null
+    val leftBattery = retainLastKnownPodBattery(
+        current = current.leftBattery,
+        incoming = packet.leftBattery,
+        inCase = packet.leftInCase,
+        caseOpen = packet.caseOpen,
+        sameDevice = sameDevice,
+        parserVersion = packet.parserVersion,
+    )
+    val rightBattery = retainLastKnownPodBattery(
+        current = current.rightBattery,
+        incoming = packet.rightBattery,
+        inCase = packet.rightInCase,
+        caseOpen = packet.caseOpen,
+        sameDevice = sameDevice,
+        parserVersion = packet.parserVersion,
+    )
+    val leftClosedCaseZero = isClosedCaseZero(
+        incoming = packet.leftBattery,
+        inCase = packet.leftInCase,
+        caseOpen = packet.caseOpen,
+        parserVersion = packet.parserVersion,
+    )
+    val rightClosedCaseZero = isClosedCaseZero(
+        incoming = packet.rightBattery,
+        inCase = packet.rightInCase,
+        caseOpen = packet.caseOpen,
+        parserVersion = packet.parserVersion,
+    )
+    val hasFreshBatterySample =
+        (packet.leftBattery != null && !leftClosedCaseZero) ||
+            (packet.rightBattery != null && !rightClosedCaseZero) ||
+            packet.caseBattery != null
 
     return AirPodsState(
         deviceId = if (sameDevice) current.deviceId ?: deviceId else deviceId,
@@ -210,8 +255,8 @@ internal fun mergeParsedState(
         // A valid AirPods broadcast can omit a battery/lid field (0xF or an
         // out-of-case frame). Do not erase the last real value when a later
         // packet only contains the other side's status.
-        leftBattery = packet.leftBattery ?: current.leftBattery.takeIf { sameDevice },
-        rightBattery = packet.rightBattery ?: current.rightBattery.takeIf { sameDevice },
+        leftBattery = leftBattery,
+        rightBattery = rightBattery,
         caseBattery = packet.caseBattery ?: current.caseBattery.takeIf { sameDevice },
         leftCharging = packet.leftCharging ?: current.leftCharging.takeIf {
             sameDevice && leftEvidence.state != ChargingState.UNKNOWN
@@ -231,23 +276,55 @@ internal fun mergeParsedState(
         deviceName = current.deviceName.takeIf { sameDevice },
         lastSeenAt = seenAt,
         confidence = packet.confidence,
-        batterySource = if (hasBattery) AirPodsDataStore.BatterySource.BLE_PUBLIC_COARSE.name
+        batterySource = if (hasFreshBatterySample) AirPodsDataStore.BatterySource.BLE_PUBLIC_COARSE.name
         else current.batterySource.takeIf { sameDevice },
-        batteryCapturedAt = if (hasBattery) seenAt else current.batteryCapturedAt.takeIf { sameDevice },
+        batteryCapturedAt = if (hasFreshBatterySample) seenAt
+        else current.batteryCapturedAt.takeIf { sameDevice },
         primaryPodIsLeft = packet.primaryPodIsLeft ?: current.primaryPodIsLeft.takeIf { sameDevice },
-        wearState = packet.wearState ?: current.wearState.takeIf { sameDevice }
-            ?: AirPodsWearState.UNKNOWN,
-        wearSource = if (packet.wearState != null) "BLE_PUBLIC_EAR_STATE"
+        wearState = if (wearDetectionEnabled) {
+            packet.wearState ?: current.wearState.takeIf { sameDevice }
+                ?: AirPodsWearState.UNKNOWN
+        } else {
+            AirPodsWearState.UNKNOWN
+        },
+        wearSource = if (!wearDetectionEnabled) null else if (packet.wearState != null) "BLE_PUBLIC_EAR_STATE"
         else current.wearSource.takeIf { sameDevice },
-        wearCapturedAt = if (packet.wearState != null) seenAt
+        wearCapturedAt = if (!wearDetectionEnabled) null else if (packet.wearState != null) seenAt
         else current.wearCapturedAt.takeIf { sameDevice },
-        wearExpiresAt = if (packet.wearState != null) seenAt + WEAR_TTL_MS
+        wearExpiresAt = if (!wearDetectionEnabled) null else if (packet.wearState != null) seenAt + WEAR_TTL_MS
         else current.wearExpiresAt.takeIf { sameDevice },
         leftChargingEvidence = leftEvidence,
         rightChargingEvidence = rightEvidence,
         caseChargingEvidence = caseEvidence,
     ).withFreshCharging(seenAt).withFreshWear(seenAt)
 }
+
+/**
+ * Public Apple proximity frames often report a pod that is in a closed case
+ * as 0 even though no new pod battery sample was delivered. That is not proof
+ * that the pod reached 0%. Keep the last real pod sample until a later frame
+ * contains a usable value or an exact AAP snapshot replaces it.
+ */
+private fun retainLastKnownPodBattery(
+    current: Int?,
+    incoming: Int?,
+    inCase: Boolean?,
+    caseOpen: Boolean?,
+    sameDevice: Boolean,
+    parserVersion: String,
+): Int? = if (isClosedCaseZero(incoming, inCase, caseOpen, parserVersion)) {
+    current.takeIf { sameDevice }
+} else {
+    incoming ?: current.takeIf { sameDevice }
+}
+
+private fun isClosedCaseZero(
+    incoming: Int?,
+    inCase: Boolean?,
+    caseOpen: Boolean?,
+    parserVersion: String,
+): Boolean = incoming == 0 && inCase == true && caseOpen != true &&
+    parserVersion.startsWith("apple-proximity-public")
 
 private fun chargingEvidence(
     charging: Boolean?,

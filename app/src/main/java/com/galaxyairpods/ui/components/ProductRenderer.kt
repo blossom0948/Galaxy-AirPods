@@ -4,6 +4,9 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
@@ -15,8 +18,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
 import com.galaxyairpods.domain.model.AirPodsModel
@@ -33,6 +38,32 @@ fun ProductRenderer(
     leftLift: Float = 0f,
     rightLift: Float = 0f,
 ) {
+    val density = LocalDensity.current
+    val renderedOpenProgress by animateFloatAsState(
+        targetValue = openProgress.coerceIn(0f, 1f),
+        animationSpec = spring(dampingRatio = 0.86f, stiffness = 420f),
+        label = "airpods-case-open",
+    )
+    val leftTargetLift = leftLift + if (state.leftInCase == false && leftLift == 0f) {
+        with(density) { -22.dp.toPx() }
+    } else {
+        0f
+    }
+    val rightTargetLift = rightLift + if (state.rightInCase == false && rightLift == 0f) {
+        with(density) { -22.dp.toPx() }
+    } else {
+        0f
+    }
+    val renderedLeftLift by animateFloatAsState(
+        targetValue = leftTargetLift,
+        animationSpec = spring(dampingRatio = 0.82f, stiffness = 360f),
+        label = "airpods-left-lift",
+    )
+    val renderedRightLift by animateFloatAsState(
+        targetValue = rightTargetLift,
+        animationSpec = spring(dampingRatio = 0.82f, stiffness = 360f),
+        label = "airpods-right-lift",
+    )
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -45,9 +76,9 @@ fun ProductRenderer(
             } else {
                 drawEarbudCase(
                     model = state.model,
-                    openProgress = openProgress.coerceIn(0f, 1f),
-                    leftLift = leftLift,
-                    rightLift = rightLift,
+                    openProgress = renderedOpenProgress,
+                    leftLift = renderedLeftLift,
+                    rightLift = renderedRightLift,
                 )
             }
         }
@@ -94,23 +125,27 @@ private fun DrawScope.drawEarbudCase(
         center = Offset(center, bodyTop + bodyHeight * 0.53f),
     )
 
+    // The lid uses a real hinge pivot plus a small lift instead of rotating a
+    // flat bitmap. This keeps the case proportions stable while it opens.
     rotate(degrees = -54f * openProgress, pivot = hinge) {
-        drawRoundRect(
-            brush = Brush.linearGradient(
-                colors = listOf(Color(0xFFFFFFFF), Color(0xFFD5DDE8)),
-                start = Offset(bodyLeft, bodyTop - bodyHeight * 0.72f),
-                end = Offset(bodyLeft + bodyWidth, bodyTop),
-            ),
-            topLeft = Offset(bodyLeft, bodyTop - bodyHeight * 0.72f),
-            size = Size(bodyWidth, bodyHeight * 0.76f),
-            cornerRadius = CornerRadius(27f, 27f),
-        )
-        drawRoundRect(
-            color = Color(0xFF8391A3).copy(alpha = 0.20f),
-            topLeft = Offset(bodyLeft + bodyWidth * 0.15f, bodyTop - bodyHeight * 0.57f),
-            size = Size(bodyWidth * 0.70f, 10f),
-            cornerRadius = CornerRadius(8f, 8f),
-        )
+        translate(top = -8f * openProgress) {
+            drawRoundRect(
+                brush = Brush.linearGradient(
+                    colors = listOf(Color(0xFFFFFFFF), Color(0xFFD5DDE8)),
+                    start = Offset(bodyLeft, bodyTop - bodyHeight * 0.72f),
+                    end = Offset(bodyLeft + bodyWidth, bodyTop),
+                ),
+                topLeft = Offset(bodyLeft, bodyTop - bodyHeight * 0.72f),
+                size = Size(bodyWidth, bodyHeight * 0.76f),
+                cornerRadius = CornerRadius(27f, 27f),
+            )
+            drawRoundRect(
+                color = Color(0xFF8391A3).copy(alpha = 0.20f),
+                topLeft = Offset(bodyLeft + bodyWidth * 0.15f, bodyTop - bodyHeight * 0.57f),
+                size = Size(bodyWidth * 0.70f, 10f),
+                cornerRadius = CornerRadius(8f, 8f),
+            )
+        }
     }
 
     val isPro = model.isPro

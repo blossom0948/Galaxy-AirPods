@@ -42,6 +42,8 @@ fun AirPodsGalaxyApp(viewModel: AppViewModel = viewModel()) {
     val showOnCaseOpen by viewModel.showOnCaseOpen.collectAsStateWithLifecycle()
     val popupDuration by viewModel.popupDuration.collectAsStateWithLifecycle()
     val backgroundDetection by viewModel.backgroundDetection.collectAsStateWithLifecycle()
+    val wearDetectionEnabled by viewModel.wearDetectionEnabled.collectAsStateWithLifecycle()
+    val automaticMediaControlEnabled by viewModel.automaticMediaControlEnabled.collectAsStateWithLifecycle()
     val modelOverride by viewModel.modelOverride.collectAsStateWithLifecycle()
     val scanStatus by viewModel.scanStatus.collectAsStateWithLifecycle()
     val updateState by viewModel.updateState.collectAsStateWithLifecycle()
@@ -77,12 +79,16 @@ fun AirPodsGalaxyApp(viewModel: AppViewModel = viewModel()) {
                         showOnCaseOpen = showOnCaseOpen,
                         popupDuration = popupDuration,
                         backgroundDetection = backgroundDetection,
+                        wearDetectionEnabled = wearDetectionEnabled,
+                        automaticMediaControlEnabled = automaticMediaControlEnabled,
                         modelOverride = modelOverride,
                         reducedMotion = reducedMotion,
                         onAutoPopupChange = viewModel::setAutoPopup,
                         onCaseOpenChange = viewModel::setShowOnCaseOpen,
                         onPopupDurationChange = viewModel::setPopupDuration,
                         onBackgroundDetectionChange = viewModel::setBackgroundDetection,
+                        onWearDetectionChange = viewModel::setWearDetectionEnabled,
+                        onAutomaticMediaControlChange = viewModel::setAutomaticMediaControlEnabled,
                         onModelOverrideChange = viewModel::setModelOverride,
                         onTestOverlay = viewModel::testOverlay,
                         onReducedMotionChange = { reducedMotion = it },

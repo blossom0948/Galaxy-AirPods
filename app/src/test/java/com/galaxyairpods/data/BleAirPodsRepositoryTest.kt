@@ -186,4 +186,62 @@ class BleAirPodsRepositoryTest {
         assertEquals(AirPodsConnectionState.NEARBY_ONLY, merged.connectionState)
         assertEquals(false, merged.isAndroidConnected)
     }
+
+    @Test
+    fun closedCaseZeroKeepsTheLastKnownPodBattery() {
+        val current = AirPodsState(
+            deviceId = "ble-address",
+            model = AirPodsModel.AIRPODS_PRO,
+            leftBattery = 63,
+            rightBattery = 71,
+            caseBattery = 44,
+            detected = true,
+            connectionState = AirPodsConnectionState.NEARBY_ONLY,
+            batterySource = "BLE_PUBLIC_COARSE",
+            batteryCapturedAt = 900L,
+        )
+        val packet = ParsedAirPodsPacket(
+            model = AirPodsModel.AIRPODS_PRO,
+            leftBattery = 0,
+            rightBattery = 71,
+            caseBattery = 44,
+            leftCharging = null,
+            rightCharging = null,
+            caseCharging = null,
+            leftInCase = true,
+            rightInCase = false,
+            caseOpen = false,
+            parserVersion = "apple-proximity-public-v4",
+            confidence = DataConfidence.LIVE,
+        )
+
+        val merged = mergeParsedState(current, "ble-address", packet, 1_000L)
+
+        assertEquals(63, merged.leftBattery)
+        assertEquals(71, merged.rightBattery)
+        assertEquals(1_000L, merged.batteryCapturedAt)
+    }
+
+    @Test
+    fun closedCaseZeroWithoutHistoryRemainsUnknownInsteadOfInventingAValue() {
+        val packet = ParsedAirPodsPacket(
+            model = AirPodsModel.AIRPODS_PRO,
+            leftBattery = 0,
+            rightBattery = null,
+            caseBattery = null,
+            leftCharging = null,
+            rightCharging = null,
+            caseCharging = null,
+            leftInCase = true,
+            rightInCase = null,
+            caseOpen = false,
+            parserVersion = "apple-proximity-public-v4",
+            confidence = DataConfidence.LIVE,
+        )
+
+        val merged = mergeParsedState(AirPodsState.empty(), "ble-address", packet, 1_000L)
+
+        assertEquals(null, merged.leftBattery)
+        assertEquals(null, merged.batteryCapturedAt)
+    }
 }

@@ -265,6 +265,14 @@ data class AirPodsState(
             )
         }
 
+    /** Hide wear telemetry immediately when the user disables the feature. */
+    fun withoutWearDetection(): AirPodsState = copy(
+        wearState = AirPodsWearState.UNKNOWN,
+        wearSource = null,
+        wearCapturedAt = null,
+        wearExpiresAt = null,
+    )
+
     companion object {
         fun empty() = AirPodsState()
     }

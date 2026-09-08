@@ -49,13 +49,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         liveRepository.state,
         dataStore.latestState,
         dataStore.modelOverride,
-    ) { live, stored, override ->
+        dataStore.wearDetectionEnabled,
+    ) { live, stored, override, wearEnabled ->
         val source = if (live.deviceId != null) {
             live.mergeKnownValuesFrom(stored)
         } else {
             stored ?: AirPodsState.empty()
         }
-        source.withResolvedConfidence().copy(model = override ?: source.model)
+        source.withResolvedConfidence()
+            .copy(model = override ?: source.model)
+            .let { if (wearEnabled) it else it.withoutWearDetection() }
     }.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5_000),
@@ -86,6 +89,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         SharingStarted.WhileSubscribed(5_000),
         true,
     )
+    val wearDetectionEnabled: StateFlow<Boolean> = dataStore.wearDetectionEnabled.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5_000),
+        true,
+    )
+    val automaticMediaControlEnabled: StateFlow<Boolean> = dataStore.automaticMediaControlEnabled.stateIn(
+        viewModelScope,
+        SharingStarted.WhileSubscribed(5_000),
+        true,
+    )
     val modelOverride: StateFlow<AirPodsModel?> = dataStore.modelOverride.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5_000),
@@ -101,9 +114,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             scanner.validatedPackets.collect { event ->
                 val previous = liveRepository.state.value
-                liveRepository.applyParsedPacket(event.deviceId, event.packet, event.seenAt)
+                liveRepository.applyParsedPacket(
+                    deviceId = event.deviceId,
+                    packet = event.packet,
+                    seenAt = event.seenAt,
+                    wearDetectionEnabled = wearDetectionEnabled.value,
+                )
                 val current = liveRepository.state.value
-                val displayState = current.copy(model = modelOverride.value ?: current.model)
+                val displayState = displayState(current)
 
                 AirPodsWidget.updateState(
                     context = getApplication(),
@@ -129,7 +147,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 val previous = liveRepository.state.value
                 liveRepository.applyBluetoothConnection(event)
                 val current = liveRepository.state.value
-                val displayState = current.copy(model = modelOverride.value ?: current.model)
+                val displayState = displayState(current)
 
                 AirPodsWidget.updateState(
                     context = getApplication(),
@@ -159,7 +177,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             scanner.classicBatteryEvents.collect { event ->
                 liveRepository.applyClassicAapBattery(event)
                 val current = liveRepository.state.value
-                val displayState = current.copy(model = modelOverride.value ?: current.model)
+                val displayState = displayState(current)
 
                 AirPodsWidget.updateState(
                     context = getApplication(),
@@ -177,11 +195,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         viewModelScope.launch {
-            scanner.classicWearEvents.collect {
-                val current = liveRepository.state.value
+            scanner.classicWearEvents.collect { event ->
+                if (!wearDetectionEnabled.value) return@collect
+                liveRepository.applyClassicAapWear(event)
+                val current = displayState(liveRepository.state.value)
                 if (popupController.state.value.isVisible) {
                     popupController.dispatch(
-                        PopupEvent.BatteryUpdated(current.copy(model = modelOverride.value ?: current.model)),
+                        PopupEvent.BatteryUpdated(current),
                     )
                 }
             }
@@ -212,6 +232,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setBackgroundDetection(enabled: Boolean) {
         viewModelScope.launch { dataStore.setBackgroundDetection(enabled) }
+    }
+
+    fun setWearDetectionEnabled(enabled: Boolean) {
+        viewModelScope.launch { dataStore.setWearDetectionEnabled(enabled) }
+    }
+
+    fun setAutomaticMediaControlEnabled(enabled: Boolean) {
+        viewModelScope.launch { dataStore.setAutomaticMediaControlEnabled(enabled) }
     }
 
     fun setModelOverride(model: AirPodsModel?) {
@@ -265,6 +293,11 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         return firstDetection ||
             connectionChanged ||
             (caseOpened && showOnCaseOpen.value)
+    }
+
+    private fun displayState(state: AirPodsState): AirPodsState {
+        val modelled = state.copy(model = modelOverride.value ?: state.model)
+        return if (wearDetectionEnabled.value) modelled else modelled.withoutWearDetection()
     }
 
     private fun startBackgroundServiceIfReady() {

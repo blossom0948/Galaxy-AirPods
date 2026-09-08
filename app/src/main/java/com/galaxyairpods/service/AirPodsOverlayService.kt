@@ -58,6 +58,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
 /**
@@ -101,7 +102,9 @@ class AirPodsOverlayService : LifecycleService() {
 
         refreshJob?.cancel()
         refreshJob = serviceScope.launch {
-            val state = dataStore.latestDisplayState.first()
+            val state = dataStore.latestDisplayState.first()?.let { stored ->
+                if (dataStore.wearDetectionEnabled.first()) stored else stored.withoutWearDetection()
+            }
             if (state == null) {
                 stopSelfResult(startId)
                 return@launch
@@ -112,7 +115,9 @@ class AirPodsOverlayService : LifecycleService() {
 
             stateJob?.cancel()
             stateJob = launch {
-                dataStore.latestDisplayState.collect { liveState ->
+                combine(dataStore.latestDisplayState, dataStore.wearDetectionEnabled) { liveState, wearEnabled ->
+                    liveState?.let { if (wearEnabled) it else it.withoutWearDetection() }
+                }.collect { liveState ->
                     if (liveState != null) displayedState.value = liveState
                 }
             }
@@ -234,11 +239,12 @@ private fun OverlayNotice(
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 16.dp)
                 .navigationBarsPadding()
-                .heightIn(max = 560.dp)
+                .heightIn(max = 520.dp)
                 .verticalScroll(rememberScrollState()),
             shape = MaterialTheme.shapes.extraLarge,
             color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 12.dp,
+            tonalElevation = 0.dp,
+            shadowElevation = 16.dp,
         ) {
             Column(Modifier.padding(horizontal = 18.dp, vertical = 14.dp)) {
                 Row(

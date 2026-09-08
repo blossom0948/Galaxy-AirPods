@@ -40,12 +40,16 @@ fun SettingsScreen(
     showOnCaseOpen: Boolean,
     popupDuration: Int,
     backgroundDetection: Boolean,
+    wearDetectionEnabled: Boolean,
+    automaticMediaControlEnabled: Boolean,
     modelOverride: AirPodsModel?,
     reducedMotion: Boolean,
     onAutoPopupChange: (Boolean) -> Unit,
     onCaseOpenChange: (Boolean) -> Unit,
     onPopupDurationChange: (Int) -> Unit,
     onBackgroundDetectionChange: (Boolean) -> Unit,
+    onWearDetectionChange: (Boolean) -> Unit,
+    onAutomaticMediaControlChange: (Boolean) -> Unit,
     onModelOverrideChange: (AirPodsModel?) -> Unit,
     onTestOverlay: () -> Unit,
     onReducedMotionChange: (Boolean) -> Unit,
@@ -74,6 +78,18 @@ fun SettingsScreen(
         SettingsToggle("자동 팝업", autoPopup, onAutoPopupChange)
         SettingsToggle("케이스를 열 때 표시", showOnCaseOpen, onCaseOpenChange)
         SettingsToggle("백그라운드 감지", backgroundDetection, onBackgroundDetectionChange)
+        SettingsToggle(
+            title = "착용 감지",
+            checked = wearDetectionEnabled,
+            onCheckedChange = onWearDetectionChange,
+            description = "왼쪽·오른쪽 착용 상태를 읽고 제품 모션에 반영합니다.",
+        )
+        SettingsToggle(
+            title = "착용 시 미디어 자동 제어",
+            checked = automaticMediaControlEnabled,
+            onCheckedChange = onAutomaticMediaControlChange,
+            description = "재생 중에 빼면 일시정지하고, 다시 착용하면 재생합니다.",
+        )
         SettingsToggle("동작 줄이기", reducedMotion, onReducedMotionChange)
 
         Card(Modifier.fillMaxWidth()) {
@@ -234,13 +250,23 @@ private fun SettingsToggle(
     title: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
+    description: String? = null,
 ) {
     Card(Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleMedium)
+                if (description != null) {
+                    Text(
+                        description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
             Switch(checked = checked, onCheckedChange = onCheckedChange)
         }
     }
