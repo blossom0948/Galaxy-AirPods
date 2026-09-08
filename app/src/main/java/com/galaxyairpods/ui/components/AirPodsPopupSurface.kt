@@ -264,6 +264,11 @@ fun AirPodsPopupSurface(
                         openProgress = openProgress.value,
                         leftLift = leftLift,
                         rightLift = rightLift,
+                        // Once both buds are really out of the open case, the
+                        // settled popup focuses on the two independent buds.
+                        // During entrance/partial removal the case remains so
+                        // the lid-to-bud motion is still understandable.
+                        showCase = shouldShowCase(popup),
                     )
                 }
 
@@ -314,6 +319,18 @@ private fun statusText(popup: PopupUiState): String = when (popup.phase) {
 }
 
 private const val MotionLabExitMs = 220L
+
+private fun shouldShowCase(popup: PopupUiState): Boolean = !(
+    popup.deviceState.caseOpen == true &&
+        popup.deviceState.leftInCase == false &&
+        popup.deviceState.rightInCase == false &&
+        popup.phase in setOf(
+            PopupPhase.SHOWING_BATTERY,
+            PopupPhase.UPDATED,
+            PopupPhase.IDLE_VISIBLE,
+            PopupPhase.DRAGGING,
+        )
+    )
 
 private fun com.galaxyairpods.domain.model.AirPodsState.batterySourceLabel(): String = when (batterySource) {
     "AAP_CLASSIC_EXACT" -> "AAP · 정밀 배터리"

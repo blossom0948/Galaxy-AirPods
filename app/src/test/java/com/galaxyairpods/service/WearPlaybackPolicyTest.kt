@@ -102,6 +102,39 @@ class WearPlaybackPolicyTest {
     }
 
     @Test
+    fun oneEarbudInCaseCanPauseAndResumeWithoutTheOtherEarbud() {
+        val policy = WearPlaybackPolicy()
+
+        assertEquals(
+            WearMediaAction.NONE,
+            policy.onWearStateChanged(AirPodsWearState.LEFT_IN_EAR, mediaWasPlaying = true),
+        )
+        assertEquals(
+            WearMediaAction.PAUSE,
+            policy.onWearStateChanged(AirPodsWearState.IN_CASE, mediaWasPlaying = true),
+        )
+        assertEquals(
+            WearMediaAction.PLAY,
+            policy.onWearStateChanged(AirPodsWearState.RIGHT_IN_EAR, mediaWasPlaying = false),
+        )
+    }
+
+    @Test
+    fun partialWearEvidenceUsesTheOneEarbudTransition() {
+        val policy = WearPlaybackPolicy()
+
+        policy.onWearStateChanged(AirPodsWearState.PARTIAL_IN_EAR, mediaWasPlaying = true)
+        assertEquals(
+            WearMediaAction.PAUSE,
+            policy.onWearStateChanged(AirPodsWearState.NONE_IN_EAR, mediaWasPlaying = true),
+        )
+        assertEquals(
+            WearMediaAction.PLAY,
+            policy.onWearStateChanged(AirPodsWearState.PARTIAL_IN_EAR, mediaWasPlaying = false),
+        )
+    }
+
+    @Test
     fun conflictAndUnknownNeverAdvanceTheWearTransition() {
         val policy = WearPlaybackPolicy()
 

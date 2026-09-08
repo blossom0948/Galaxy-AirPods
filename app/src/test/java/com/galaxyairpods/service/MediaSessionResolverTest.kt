@@ -65,4 +65,20 @@ class MediaSessionResolverTest {
 
         assertEquals("com.example.pause", selected?.packageName)
     }
+
+    @Test
+    fun bufferingMediaIsStillAValidPauseTarget() {
+        val selected = selectBestPlayingSession(
+            listOf(
+                MediaSessionCandidate(
+                    packageName = "com.example.video",
+                    state = PlaybackState.STATE_BUFFERING,
+                    actions = PlaybackState.ACTION_PAUSE,
+                    lastPositionUpdateTime = 800L,
+                ),
+            ),
+        )
+
+        assertEquals("com.example.video", selected?.packageName)
+    }
 }

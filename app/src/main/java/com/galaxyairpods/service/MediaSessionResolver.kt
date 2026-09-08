@@ -19,13 +19,26 @@ internal fun selectBestPlayingSession(
     candidates: List<MediaSessionCandidate>,
 ): MediaSessionCandidate? = candidates
     .asSequence()
-    .filter { it.state == PlaybackState.STATE_PLAYING }
+    .filter { it.state.isActivePlaybackState() }
     .maxWithOrNull(
         compareBy<MediaSessionCandidate> {
             it.actions and PlaybackState.ACTION_PAUSE
+        }.thenBy {
+            // Prefer a confirmed PLAYING session over a transient BUFFERING
+            // session, but still allow buffering video/audio to be paused.
+            if (it.state == PlaybackState.STATE_PLAYING) 1 else 0
         }.thenBy { it.lastPositionUpdateTime }
             .thenBy { it.packageName },
     )
+
+internal fun Int.isActivePlaybackState(): Boolean = when (this) {
+    PlaybackState.STATE_PLAYING,
+    PlaybackState.STATE_BUFFERING,
+    PlaybackState.STATE_FAST_FORWARDING,
+    PlaybackState.STATE_REWINDING,
+    -> true
+    else -> false
+}
 
 /**
  * Resolves sessions only through the connected NotificationListenerService.

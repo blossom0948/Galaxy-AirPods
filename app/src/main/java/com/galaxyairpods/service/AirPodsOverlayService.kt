@@ -276,6 +276,9 @@ private fun OverlayNotice(
                     modifier = Modifier.fillMaxWidth(),
                     artworkHeight = 126.dp,
                     openProgress = if (displayed.caseOpen == true) 1f else 0f,
+                    showCase = !(displayed.caseOpen == true &&
+                        displayed.leftInCase == false &&
+                        displayed.rightInCase == false),
                 )
                 BatteryGrid(
                     state = displayed,

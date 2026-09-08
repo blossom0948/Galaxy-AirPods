@@ -153,8 +153,17 @@ class AirPodsMonitorService : Service() {
                 val previous = repository.state.value
                 repository.applyBluetoothConnection(event)
                 val current = repository.state.value
-                if (event.connectionState != com.galaxyairpods.domain.model.AirPodsConnectionState.ANDROID_CONNECTED) {
-                    mediaPlaybackController.reset()
+                when (event.connectionState) {
+                    com.galaxyairpods.domain.model.AirPodsConnectionState.DISCONNECTED,
+                    com.galaxyairpods.domain.model.AirPodsConnectionState.UNKNOWN,
+                    -> mediaPlaybackController.reset()
+                    else -> {
+                        // NEARBY_ONLY/CONNECTION_PENDING can be a transient
+                        // Samsung profile-poll result while a single bud is
+                        // still the active output. Let the route gate decide
+                        // whether the saved auto-pause session is still safe.
+                        mediaPlaybackController.onConnectionEvidenceChanged(current)
+                    }
                 }
                 val override = dataStore.modelOverride.first()
                 val displayState = current.copy(model = override ?: current.model)

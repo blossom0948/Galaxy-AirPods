@@ -64,4 +64,19 @@ class AndroidAudioRouteGateTest {
             ).activeForTarget,
         )
     }
+
+    @Test
+    fun profileAndAirPodsNameMatchStillPassesWhenSamsungReportsAnotherOutputAddress() {
+        // On a one-ear route the profile address and AudioDeviceInfo address
+        // can differ.  The connected A2DP/HEADSET profile plus matching
+        // AirPods product name is enough to identify the active route.
+        assertTrue(
+            AudioRouteEvidence(
+                profileConnected = true,
+                outputTypeIsBluetooth = true,
+                outputAddressMatches = false,
+                outputNameMatches = true,
+            ).activeForTarget,
+        )
+    }
 }

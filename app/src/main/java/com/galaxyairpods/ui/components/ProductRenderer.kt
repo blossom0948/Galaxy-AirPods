@@ -1,13 +1,13 @@
 package com.galaxyairpods.ui.components
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -18,17 +18,26 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import com.galaxyairpods.domain.model.AirPodsModel
 import com.galaxyairpods.domain.model.AirPodsState
 import com.galaxyairpods.domain.model.isMax
 import com.galaxyairpods.domain.model.isPro
+import kotlin.math.min
 
+/**
+ * Renders the product as independent vector layers instead of scaling one
+ * flat bitmap. The geometry is original artwork: it is not an Apple system
+ * screenshot or a third-party asset. Keeping the layers in one Canvas makes
+ * the popup light enough for a TYPE_APPLICATION_OVERLAY window while still
+ * giving the lid, body, left bud and right bud independent motion channels.
+ */
 @Composable
 fun ProductRenderer(
     state: AirPodsState,
@@ -37,6 +46,7 @@ fun ProductRenderer(
     openProgress: Float = if (state.caseOpen == true) 1f else 0f,
     leftLift: Float = 0f,
     rightLift: Float = 0f,
+    showCase: Boolean = true,
 ) {
     val density = LocalDensity.current
     val renderedOpenProgress by animateFloatAsState(
@@ -44,16 +54,15 @@ fun ProductRenderer(
         animationSpec = spring(dampingRatio = 0.86f, stiffness = 420f),
         label = "airpods-case-open",
     )
-    val leftTargetLift = leftLift + if (state.leftInCase == false && leftLift == 0f) {
-        with(density) { -22.dp.toPx() }
-    } else {
-        0f
-    }
-    val rightTargetLift = rightLift + if (state.rightInCase == false && rightLift == 0f) {
-        with(density) { -22.dp.toPx() }
-    } else {
-        0f
-    }
+    val outOfCaseLift = with(density) { -52.dp.toPx() }
+    val leftTargetLift = minOf(
+        leftLift,
+        if (state.leftInCase == false) outOfCaseLift else 0f,
+    )
+    val rightTargetLift = minOf(
+        rightLift,
+        if (state.rightInCase == false) outOfCaseLift else 0f,
+    )
     val renderedLeftLift by animateFloatAsState(
         targetValue = leftTargetLift,
         animationSpec = spring(dampingRatio = 0.82f, stiffness = 360f),
@@ -64,6 +73,7 @@ fun ProductRenderer(
         animationSpec = spring(dampingRatio = 0.82f, stiffness = 360f),
         label = "airpods-right-lift",
     )
+
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -74,276 +84,463 @@ fun ProductRenderer(
             if (state.model.isMax) {
                 drawMaxHeadphones()
             } else {
-                drawEarbudCase(
+                drawAirPodsArtwork(
                     model = state.model,
                     openProgress = renderedOpenProgress,
                     leftLift = renderedLeftLift,
                     rightLift = renderedRightLift,
+                    caseCharging = state.caseCharging == true,
+                    showCase = showCase,
                 )
             }
         }
     }
 }
 
-/** Geometry is intentionally model-specific so every selector choice has a
- * recognisable silhouette instead of one generic placeholder drawing. */
-private data class EarbudArtworkGeometry(
+private const val DESIGN_WIDTH = 360f
+private const val DESIGN_HEIGHT = 190f
+
+private data class AirPodsArtworkGeometry(
     val caseWidth: Float,
-    val caseHeight: Float,
-    val caseCorner: Float,
-    val lidHeightFactor: Float,
-    val headRadius: Float,
+    val bodyHeight: Float,
+    val lidHeight: Float,
+    val cornerRadius: Float,
+    val headWidth: Float,
+    val headHeight: Float,
     val stemLength: Float,
     val stemWidth: Float,
     val proTip: Boolean,
 )
 
-private fun AirPodsModel.earbudArtworkGeometry(): EarbudArtworkGeometry = when {
-    isPro -> EarbudArtworkGeometry(
-        caseWidth = 0.54f,
-        caseHeight = 0.35f,
-        caseCorner = 30f,
-        lidHeightFactor = 0.74f,
-        headRadius = 18f,
-        stemLength = 25f,
-        stemWidth = 11f,
+/** Different generations keep their recognisable case and earbud silhouette. */
+private fun AirPodsModel.artworkGeometry(): AirPodsArtworkGeometry = when {
+    isPro -> AirPodsArtworkGeometry(
+        caseWidth = 218f,
+        bodyHeight = 68f,
+        lidHeight = 48f,
+        cornerRadius = 23f,
+        headWidth = 27f,
+        headHeight = 29f,
+        stemLength = 31f,
+        stemWidth = 10f,
         proTip = true,
     )
     this == AirPodsModel.AIRPODS_GEN3 ||
         this == AirPodsModel.AIRPODS_GEN4 ||
-        this == AirPodsModel.AIRPODS_GEN4_ANC -> EarbudArtworkGeometry(
-        caseWidth = 0.51f,
-        caseHeight = 0.34f,
-        caseCorner = 29f,
-        lidHeightFactor = 0.72f,
-        headRadius = 20f,
-        stemLength = 28f,
-        stemWidth = 11f,
+        this == AirPodsModel.AIRPODS_GEN4_ANC -> AirPodsArtworkGeometry(
+        caseWidth = 206f,
+        bodyHeight = 65f,
+        lidHeight = 45f,
+        cornerRadius = 23f,
+        headWidth = 27f,
+        headHeight = 25f,
+        stemLength = 39f,
+        stemWidth = 9f,
         proTip = false,
     )
-    else -> EarbudArtworkGeometry(
-        caseWidth = 0.48f,
-        caseHeight = 0.37f,
-        caseCorner = 25f,
-        lidHeightFactor = 0.78f,
-        headRadius = 18f,
-        stemLength = 40f,
-        stemWidth = 10f,
+    else -> AirPodsArtworkGeometry(
+        caseWidth = 196f,
+        bodyHeight = 69f,
+        lidHeight = 47f,
+        cornerRadius = 21f,
+        headWidth = 25f,
+        headHeight = 24f,
+        stemLength = 49f,
+        stemWidth = 9f,
         proTip = false,
     )
 }
 
-private fun DrawScope.drawEarbudCase(
+private fun DrawScope.drawAirPodsArtwork(
     model: AirPodsModel,
     openProgress: Float,
     leftLift: Float,
     rightLift: Float,
+    caseCharging: Boolean,
+    showCase: Boolean,
 ) {
-    val geometry = model.earbudArtworkGeometry()
-    val center = size.width / 2f
-    val bodyWidth = size.width * geometry.caseWidth
-    val bodyHeight = size.height * geometry.caseHeight
-    val bodyLeft = center - bodyWidth / 2f
-    val bodyTop = size.height * 0.53f
-    val hinge = Offset(center, bodyTop + 5f)
-    val lidHeight = bodyHeight * geometry.lidHeightFactor
+    val geometry = model.artworkGeometry()
+    val unit = min(size.width / DESIGN_WIDTH, size.height / DESIGN_HEIGHT)
+    val originX = (size.width - DESIGN_WIDTH * unit) / 2f
+    val originY = (size.height - DESIGN_HEIGHT * unit) / 2f
+    val centerX = originX + DESIGN_WIDTH * unit / 2f
+    val bodyWidth = geometry.caseWidth * unit
+    val bodyHeight = geometry.bodyHeight * unit
+    val bodyLeft = centerX - bodyWidth / 2f
+    val bodyTop = originY + 106f * unit
+    val hinge = Offset(centerX, bodyTop + 1.5f * unit)
+    val leftInCase = leftLift > -8f * unit
+    val rightInCase = rightLift > -8f * unit
 
-    drawOval(
-        color = Color.Black.copy(alpha = 0.24f),
-        topLeft = Offset(bodyLeft - 20f, bodyTop + bodyHeight - 2f),
-        size = Size(bodyWidth + 40f, 22f),
-    )
-    drawRoundRect(
-        brush = Brush.linearGradient(
-            colors = listOf(Color(0xFFFFFFFF), Color(0xFFD5DDE8), Color(0xFF9EAABD)),
-            start = Offset(bodyLeft, bodyTop),
-            end = Offset(bodyLeft + bodyWidth, bodyTop + bodyHeight),
-        ),
-        topLeft = Offset(bodyLeft, bodyTop),
-        size = Size(bodyWidth, bodyHeight),
-        cornerRadius = CornerRadius(geometry.caseCorner, geometry.caseCorner),
-    )
-    drawRoundRect(
-        color = Color(0xFF8D99AA).copy(alpha = 0.12f + (0.08f * openProgress)),
-        topLeft = Offset(bodyLeft + bodyWidth * 0.11f, bodyTop + bodyHeight * 0.08f),
-        size = Size(bodyWidth * 0.78f, bodyHeight * 0.14f),
-        cornerRadius = CornerRadius(8f, 8f),
-    )
-    drawRoundRect(
-        color = Color(0xFF7C899A).copy(alpha = 0.26f),
-        topLeft = Offset(bodyLeft + bodyWidth * 0.15f, bodyTop + bodyHeight * 0.20f),
-        size = Size(bodyWidth * 0.70f, bodyHeight * 0.12f),
-        cornerRadius = CornerRadius(9f, 9f),
-    )
-    drawCircle(
-        color = Color(0xFF8795A7).copy(alpha = 0.42f),
-        radius = 4.5f,
-        center = Offset(center, bodyTop + bodyHeight * 0.53f),
-    )
-    drawLine(
-        color = Color(0xFF7E8B9C).copy(alpha = 0.24f),
-        start = Offset(bodyLeft + bodyWidth * 0.20f, bodyTop + bodyHeight * 0.13f),
-        end = Offset(bodyLeft + bodyWidth * 0.80f, bodyTop + bodyHeight * 0.13f),
-        strokeWidth = 2.5f,
-    )
-
-    // The lid uses a real hinge pivot plus a small lift instead of rotating a
-    // flat bitmap. This keeps the case proportions stable while it opens.
-    rotate(degrees = -54f * openProgress, pivot = hinge) {
-        translate(top = -8f * openProgress) {
-            drawRoundRect(
-                brush = Brush.linearGradient(
-                    colors = listOf(Color(0xFFFFFFFF), Color(0xFFD5DDE8)),
-                    start = Offset(bodyLeft, bodyTop - bodyHeight * 0.72f),
-                    end = Offset(bodyLeft + bodyWidth, bodyTop),
-                ),
-                topLeft = Offset(bodyLeft, bodyTop - lidHeight * 0.72f),
-                size = Size(bodyWidth, lidHeight * 0.76f),
-                cornerRadius = CornerRadius(geometry.caseCorner * 0.90f, geometry.caseCorner * 0.90f),
-            )
-            drawRoundRect(
-                color = Color(0xFF8391A3).copy(alpha = 0.20f),
-                topLeft = Offset(bodyLeft + bodyWidth * 0.15f, bodyTop - lidHeight * 0.57f),
-                size = Size(bodyWidth * 0.70f, 10f),
-                cornerRadius = CornerRadius(8f, 8f),
-            )
-        }
+    if (showCase) {
+        drawOval(
+            color = Color(0xFF7B8798).copy(alpha = 0.20f),
+            topLeft = Offset(bodyLeft - 18f * unit, bodyTop + bodyHeight - 1f * unit),
+            size = Size(bodyWidth + 36f * unit, 13f * unit),
+        )
+        drawOval(
+            color = Color(0xFF5F6A78).copy(alpha = 0.12f),
+            topLeft = Offset(bodyLeft + 16f * unit, bodyTop + bodyHeight + 1f * unit),
+            size = Size(bodyWidth - 32f * unit, 7f * unit),
+        )
     }
 
-    val leftOutProgress = (-leftLift / (size.height * 0.14f)).coerceIn(0f, 1f)
-    val rightOutProgress = (-rightLift / (size.height * 0.14f)).coerceIn(0f, 1f)
+    // Buds that are still in the case are drawn behind the front shell. This
+    // masks their lower stems naturally instead of clipping a bitmap.
+    if (showCase && leftInCase) {
+        drawEarbud(
+            center = Offset(centerX - bodyWidth * 0.215f, bodyTop + 8f * unit),
+            geometry = geometry,
+            unit = unit,
+            tilt = -7f,
+            alpha = 0.96f,
+        )
+    }
+    if (showCase && rightInCase) {
+        drawEarbud(
+            center = Offset(centerX + bodyWidth * 0.215f, bodyTop + 8f * unit),
+            geometry = geometry,
+            unit = unit,
+            tilt = 7f,
+            alpha = 0.96f,
+        )
+    }
 
-    drawEarbud(
-        center = Offset(
-            center - bodyWidth * 0.27f - (size.width * 0.035f * leftOutProgress),
-            bodyTop + bodyHeight * 0.10f + leftLift,
+    if (showCase) {
+        drawCaseBody(
+            left = bodyLeft,
+            top = bodyTop,
+            width = bodyWidth,
+            height = bodyHeight,
+            corner = geometry.cornerRadius * unit,
+            openProgress = openProgress,
+        )
+        drawCaseInterior(
+            left = bodyLeft,
+            top = bodyTop,
+            width = bodyWidth,
+            openProgress = openProgress,
+            unit = unit,
+        )
+        drawCaseLid(
+            left = bodyLeft,
+            top = bodyTop,
+            width = bodyWidth,
+            height = geometry.lidHeight * unit,
+            corner = geometry.cornerRadius * 0.94f * unit,
+            hinge = hinge,
+            openProgress = openProgress,
+            unit = unit,
+        )
+        drawChargingLight(
+            center = Offset(centerX, bodyTop + bodyHeight * 0.54f),
+            unit = unit,
+            charging = caseCharging,
+        )
+    }
+
+    // Removed buds are rendered above the case. Their horizontal separation
+    // increases as they rise, which reads as a real two-object lift rather
+    // than a single PNG being translated as one unit.
+    if (!leftInCase) {
+        val progress = (-leftLift / unit / 52f).coerceIn(0f, 1f)
+        drawEarbud(
+            center = Offset(
+                centerX - bodyWidth * 0.215f - 17f * unit * progress,
+                bodyTop + 8f * unit + leftLift,
+            ),
+            geometry = geometry,
+            unit = unit,
+            tilt = -10f,
+            alpha = 1f,
+        )
+    }
+    if (!rightInCase) {
+        val progress = (-rightLift / unit / 52f).coerceIn(0f, 1f)
+        drawEarbud(
+            center = Offset(
+                centerX + bodyWidth * 0.215f + 17f * unit * progress,
+                bodyTop + 8f * unit + rightLift,
+            ),
+            geometry = geometry,
+            unit = unit,
+            tilt = 10f,
+            alpha = 1f,
+        )
+    }
+}
+
+private fun DrawScope.drawCaseBody(
+    left: Float,
+    top: Float,
+    width: Float,
+    height: Float,
+    corner: Float,
+    openProgress: Float,
+) {
+    drawRoundRect(
+        brush = Brush.linearGradient(
+            colors = listOf(
+                Color(0xFFFFFFFF),
+                Color(0xFFF5F7FA),
+                Color(0xFFD6DEE8),
+                Color(0xFFB3BFCE),
+            ),
+            start = Offset(left, top),
+            end = Offset(left + width, top + height),
         ),
-        headRadius = geometry.headRadius,
-        stemLength = geometry.stemLength,
-        stemWidth = geometry.stemWidth,
-        proTip = geometry.proTip,
-        tilt = -8f,
+        topLeft = Offset(left, top),
+        size = Size(width, height),
+        cornerRadius = CornerRadius(corner, corner),
     )
-    drawEarbud(
-        center = Offset(
-            center + bodyWidth * 0.27f + (size.width * 0.035f * rightOutProgress),
-            bodyTop + bodyHeight * 0.08f + rightLift,
+    drawRoundRect(
+        color = Color.White.copy(alpha = 0.58f),
+        topLeft = Offset(left + width * 0.065f, top + height * 0.08f),
+        size = Size(width * 0.87f, height * 0.28f),
+        cornerRadius = CornerRadius(corner * 0.55f, corner * 0.55f),
+    )
+    drawRoundRect(
+        color = Color(0xFF738196).copy(alpha = 0.10f + openProgress * 0.08f),
+        topLeft = Offset(left + width * 0.12f, top + height * 0.16f),
+        size = Size(width * 0.76f, height * 0.18f),
+        cornerRadius = CornerRadius(corner * 0.45f, corner * 0.45f),
+    )
+    drawLine(
+        color = Color(0xFF8793A2).copy(alpha = 0.28f),
+        start = Offset(left + width * 0.15f, top + height * 0.115f),
+        end = Offset(left + width * 0.85f, top + height * 0.115f),
+        strokeWidth = maxOf(1.2f, height * 0.018f),
+    )
+}
+
+private fun DrawScope.drawCaseInterior(
+    left: Float,
+    top: Float,
+    width: Float,
+    openProgress: Float,
+    unit: Float,
+) {
+    val cavityAlpha = (0.16f + openProgress * 0.64f).coerceIn(0f, 0.82f)
+    drawRoundRect(
+        brush = Brush.verticalGradient(
+            listOf(
+                Color(0xFF5C6A7C).copy(alpha = cavityAlpha),
+                Color(0xFF1F2A39).copy(alpha = cavityAlpha * 0.92f),
+            ),
         ),
-        headRadius = geometry.headRadius,
-        stemLength = geometry.stemLength,
-        stemWidth = geometry.stemWidth,
-        proTip = geometry.proTip,
-        tilt = 8f,
+        topLeft = Offset(left + width * 0.105f, top - 1f * unit),
+        size = Size(width * 0.79f, 19f * unit),
+        cornerRadius = CornerRadius(9f * unit, 9f * unit),
     )
+    drawOval(
+        color = Color(0xFF1B2634).copy(alpha = cavityAlpha * 0.80f),
+        topLeft = Offset(left + width * 0.22f, top + 3f * unit),
+        size = Size(width * 0.20f, 10f * unit),
+    )
+    drawOval(
+        color = Color(0xFF1B2634).copy(alpha = cavityAlpha * 0.80f),
+        topLeft = Offset(left + width * 0.58f, top + 3f * unit),
+        size = Size(width * 0.20f, 10f * unit),
+    )
+}
+
+private fun DrawScope.drawCaseLid(
+    left: Float,
+    top: Float,
+    width: Float,
+    height: Float,
+    corner: Float,
+    hinge: Offset,
+    openProgress: Float,
+    unit: Float,
+) {
+    val lidTop = top - height + 2f * unit
+    rotate(degrees = -54f * openProgress, pivot = hinge) {
+        translate(top = -5f * unit * openProgress) {
+            scale(
+                scaleX = 1f,
+                scaleY = 1f - 0.22f * openProgress,
+                pivot = hinge,
+            ) {
+                drawRoundRect(
+                    brush = Brush.linearGradient(
+                        colors = listOf(Color(0xFFFFFFFF), Color(0xFFF0F4F8), Color(0xFFCAD4E0)),
+                        start = Offset(left, lidTop),
+                        end = Offset(left + width, top),
+                    ),
+                    topLeft = Offset(left, lidTop),
+                    size = Size(width, height),
+                    cornerRadius = CornerRadius(corner, corner),
+                )
+                drawRoundRect(
+                    color = Color.White.copy(alpha = 0.56f),
+                    topLeft = Offset(left + width * 0.075f, lidTop + height * 0.16f),
+                    size = Size(width * 0.85f, height * 0.28f),
+                    cornerRadius = CornerRadius(corner * 0.45f, corner * 0.45f),
+                )
+                drawLine(
+                    color = Color(0xFF8D99A9).copy(alpha = 0.22f),
+                    start = Offset(left + width * 0.16f, lidTop + height * 0.58f),
+                    end = Offset(left + width * 0.84f, lidTop + height * 0.58f),
+                    strokeWidth = maxOf(1.2f, height * 0.022f),
+                )
+            }
+        }
+    }
+}
+
+private fun DrawScope.drawChargingLight(
+    center: Offset,
+    unit: Float,
+    charging: Boolean,
+) {
+    drawCircle(
+        color = if (charging) Color(0xFF1CCB83) else Color(0xFF718096),
+        radius = 2.4f * unit,
+        center = center,
+        alpha = if (charging) 0.96f else 0.36f,
+    )
+    if (charging) {
+        drawCircle(
+            color = Color(0xFF58E9B0).copy(alpha = 0.24f),
+            radius = 5.2f * unit,
+            center = center,
+        )
+    }
 }
 
 private fun DrawScope.drawEarbud(
     center: Offset,
-    headRadius: Float,
-    stemLength: Float,
-    stemWidth: Float,
-    proTip: Boolean,
+    geometry: AirPodsArtworkGeometry,
+    unit: Float,
     tilt: Float,
+    alpha: Float,
 ) {
     rotate(degrees = tilt, pivot = center) {
-        drawCircle(
+        val headWidth = geometry.headWidth * unit
+        val headHeight = geometry.headHeight * unit
+        val headLeft = center.x - headWidth / 2f
+        val headTop = center.y - headHeight / 2f
+        val stemTop = center.y + headHeight * 0.27f
+        val stemHeight = geometry.stemLength * unit
+        val stemWidth = geometry.stemWidth * unit
+
+        drawOval(
             brush = Brush.radialGradient(
-                colors = listOf(Color.White, Color(0xFFE2E9F1), Color(0xFFA9B6C6)),
-                center = center,
-                radius = headRadius * 1.4f,
+                colors = listOf(
+                    Color.White.copy(alpha = alpha),
+                    Color(0xFFF0F4F8).copy(alpha = alpha),
+                    Color(0xFFB6C2D0).copy(alpha = alpha),
+                ),
+                center = Offset(center.x - headWidth * 0.16f, center.y - headHeight * 0.16f),
+                radius = headWidth * 0.75f,
             ),
-            radius = headRadius,
-            center = center,
+            topLeft = Offset(headLeft, headTop),
+            size = Size(headWidth, headHeight),
         )
-        if (proTip) {
+        if (geometry.proTip) {
             drawOval(
-                color = Color(0xFF667487),
-                topLeft = Offset(center.x - 8f, center.y - 3f),
-                size = Size(16f, 9f),
+                color = Color(0xFF657487).copy(alpha = alpha * 0.92f),
+                topLeft = Offset(center.x - headWidth * 0.27f, center.y - headHeight * 0.03f),
+                size = Size(headWidth * 0.54f, headHeight * 0.28f),
             )
             drawOval(
-                color = Color(0xFF3C4757).copy(alpha = 0.78f),
-                topLeft = Offset(center.x - 5f, center.y - 1f),
-                size = Size(10f, 5f),
+                color = Color(0xFF303C4B).copy(alpha = alpha * 0.78f),
+                topLeft = Offset(center.x - headWidth * 0.18f, center.y + headHeight * 0.01f),
+                size = Size(headWidth * 0.36f, headHeight * 0.13f),
             )
             drawCircle(
-                color = Color(0xFF566477).copy(alpha = 0.66f),
-                radius = 2.4f,
-                center = Offset(center.x + 7f, center.y + 6f),
+                color = Color(0xFF536174).copy(alpha = alpha * 0.72f),
+                radius = 1.8f * unit,
+                center = Offset(center.x + headWidth * 0.26f, center.y + headHeight * 0.22f),
             )
         } else {
+            drawOval(
+                color = Color(0xFF6C7A8D).copy(alpha = alpha * 0.72f),
+                topLeft = Offset(center.x - headWidth * 0.18f, center.y - headHeight * 0.03f),
+                size = Size(headWidth * 0.36f, headHeight * 0.20f),
+            )
             drawCircle(
-                color = Color(0xFF708094).copy(alpha = 0.75f),
-                radius = 4f,
-                center = Offset(center.x, center.y - 1f),
+                color = Color(0xFF526174).copy(alpha = alpha * 0.58f),
+                radius = 1.4f * unit,
+                center = Offset(center.x + headWidth * 0.22f, center.y + headHeight * 0.18f),
             )
         }
         drawRoundRect(
-            brush = Brush.verticalGradient(listOf(Color(0xFFF0F4F8), Color(0xFFB7C3D1))),
-            topLeft = Offset(center.x - stemWidth / 2f, center.y + headRadius * 0.55f),
-            size = Size(stemWidth, stemLength),
+            brush = Brush.verticalGradient(
+                listOf(
+                    Color(0xFFF7FAFC).copy(alpha = alpha),
+                    Color(0xFFD5DEE9).copy(alpha = alpha),
+                    Color(0xFFA9B7C7).copy(alpha = alpha),
+                ),
+            ),
+            topLeft = Offset(center.x - stemWidth / 2f, stemTop),
+            size = Size(stemWidth, stemHeight),
             cornerRadius = CornerRadius(stemWidth / 2f, stemWidth / 2f),
         )
         drawCircle(
-            color = Color(0xFF4B5A6C).copy(alpha = 0.70f),
-            radius = 2.7f,
-            center = Offset(center.x, center.y + headRadius * 0.55f + stemLength - 5f),
+            color = Color(0xFF455366).copy(alpha = alpha * 0.72f),
+            radius = 1.7f * unit,
+            center = Offset(center.x, stemTop + stemHeight - 5f * unit),
         )
     }
 }
 
 private fun DrawScope.drawMaxHeadphones() {
-    val center = size.width / 2f
-    val cupY = size.height * 0.57f
-    val cupWidth = size.width * 0.26f
-    val cupHeight = size.height * 0.40f
-    val gap = size.width * 0.18f
+    val unit = min(size.width / DESIGN_WIDTH, size.height / DESIGN_HEIGHT)
+    val originX = (size.width - DESIGN_WIDTH * unit) / 2f
+    val originY = (size.height - DESIGN_HEIGHT * unit) / 2f
+    val center = originX + DESIGN_WIDTH * unit / 2f
+    val cupWidth = 65f * unit
+    val cupHeight = 75f * unit
+    val cupY = originY + 115f * unit
+    val gap = 42f * unit
     val leftX = center - gap - cupWidth / 2f
     val rightX = center + gap - cupWidth / 2f
-    val headbandRect = Rect(
-        left = center - size.width * 0.25f,
-        top = size.height * 0.10f,
-        right = center + size.width * 0.25f,
-        bottom = size.height * 0.85f,
+    val bandRect = Rect(
+        left = center - 88f * unit,
+        top = originY + 20f * unit,
+        right = center + 88f * unit,
+        bottom = originY + 148f * unit,
     )
 
     drawArc(
-        color = Color(0xFFB6C1CF),
+        color = Color(0xFFAFBBC9),
         startAngle = 195f,
         sweepAngle = 150f,
         useCenter = false,
-        topLeft = headbandRect.topLeft,
-        size = headbandRect.size,
-        style = Stroke(width = 12f),
-    )
-    drawLine(
-        color = Color(0xFF8997AA),
-        start = Offset(leftX + cupWidth * 0.84f, size.height * 0.29f),
-        end = Offset(leftX + cupWidth * 0.84f, cupY - cupHeight * 0.34f),
-        strokeWidth = 8f,
-    )
-    drawLine(
-        color = Color(0xFF8997AA),
-        start = Offset(rightX + cupWidth * 0.16f, size.height * 0.29f),
-        end = Offset(rightX + cupWidth * 0.16f, cupY - cupHeight * 0.34f),
-        strokeWidth = 8f,
+        topLeft = bandRect.topLeft,
+        size = bandRect.size,
+        style = Stroke(width = 10f * unit),
     )
     drawOval(
-        color = Color.Black.copy(alpha = 0.22f),
-        topLeft = Offset(leftX - 4f, cupY + cupHeight * 0.36f),
-        size = Size(cupWidth * 2f + gap * 2f + 8f, 17f),
+        color = Color.Black.copy(alpha = 0.18f),
+        topLeft = Offset(leftX - 8f * unit, cupY + cupHeight * 0.35f),
+        size = Size(cupWidth * 2f + gap * 2f + 16f * unit, 11f * unit),
+    )
+    drawLine(
+        color = Color(0xFF8997AA),
+        start = Offset(leftX + cupWidth * 0.84f, originY + 74f * unit),
+        end = Offset(leftX + cupWidth * 0.84f, cupY - cupHeight * 0.32f),
+        strokeWidth = 7f * unit,
+    )
+    drawLine(
+        color = Color(0xFF8997AA),
+        start = Offset(rightX + cupWidth * 0.16f, originY + 74f * unit),
+        end = Offset(rightX + cupWidth * 0.16f, cupY - cupHeight * 0.32f),
+        strokeWidth = 7f * unit,
     )
     drawRoundRect(
         brush = Brush.linearGradient(listOf(Color(0xFFE9EEF5), Color(0xFF9BA8B9))),
         topLeft = Offset(leftX, cupY - cupHeight / 2f),
         size = Size(cupWidth, cupHeight),
-        cornerRadius = CornerRadius(28f, 28f),
+        cornerRadius = CornerRadius(24f * unit, 24f * unit),
     )
     drawRoundRect(
         brush = Brush.linearGradient(listOf(Color(0xFFE9EEF5), Color(0xFF9BA8B9))),
         topLeft = Offset(rightX, cupY - cupHeight / 2f),
         size = Size(cupWidth, cupHeight),
-        cornerRadius = CornerRadius(28f, 28f),
+        cornerRadius = CornerRadius(24f * unit, 24f * unit),
     )
     drawCircle(
         color = Color(0xFF718094).copy(alpha = 0.34f),
@@ -354,10 +551,5 @@ private fun DrawScope.drawMaxHeadphones() {
         color = Color(0xFF718094).copy(alpha = 0.34f),
         radius = cupWidth * 0.27f,
         center = Offset(rightX + cupWidth / 2f, cupY),
-    )
-    drawCircle(
-        color = Color(0xFF9FE6D7),
-        radius = 3.5f,
-        center = Offset(center, size.height * 0.35f),
     )
 }

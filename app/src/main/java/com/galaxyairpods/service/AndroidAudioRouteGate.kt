@@ -44,10 +44,12 @@ internal class AndroidAudioRouteGate(context: Context) {
         val outputAddressMatches = bluetoothOutputs.any { output ->
             targetAddress.isNotBlank() && normalize(output.address) == targetAddress
         }
-        val outputAddressIsKnown = bluetoothOutputs.any { output ->
-            normalize(output.address).isNotBlank()
-        }
-        val outputNameMatches = !outputAddressIsKnown && bluetoothOutputs.any { output ->
+        // Samsung may expose the composite AirPods output with a different
+        // address from the bonded profile address when only one bud remains
+        // active.  The profile flag is still a target-device proof, so a
+        // matching AirPods product name remains valid even when the output
+        // address is present but not equal to the profile address.
+        val outputNameMatches = bluetoothOutputs.any { output ->
             namesMatch(targetName, normalize(output.productName?.toString()))
         }
         return AudioRouteEvidence(

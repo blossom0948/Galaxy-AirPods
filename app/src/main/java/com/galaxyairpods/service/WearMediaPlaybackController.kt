@@ -96,6 +96,7 @@ internal class WearMediaPlaybackController(
     private var pausedSessionToken: MediaSession.Token? = null
     private var pausedPackageName: String? = null
     private var pausedPositionUpdateTime: Long? = null
+    private var pausedWithMediaKeyFallback = false
     private var lastWearEvidenceCapturedAtElapsedMs: Long? = null
 
     suspend fun onWearStateChanged(state: AirPodsState) = actionMutex.withLock {
@@ -158,13 +159,56 @@ internal class WearMediaPlaybackController(
         lastWearEvidenceCapturedAtElapsedMs = null
     }
 
+    /**
+     * A profile poll can briefly report NEARBY/CONNECTION_PENDING while a
+     * single AirPod is still the active Android output.  Do not throw away a
+     * pending auto-resume token until the output gate actually proves that the
+     * route is gone.  An explicit DISCONNECTED/UNKNOWN event still calls
+     * [reset] from the monitor service.
+     */
+    fun onConnectionEvidenceChanged(state: AirPodsState) {
+        val route = routeGate.check(state)
+        if (!route.activeForTarget) {
+            reset()
+            Log.i(
+                TAG,
+                "wear_media_connection route=false action_state_cleared=" +
+                    "${state.connectionState}",
+            )
+        } else {
+            Log.d(
+                TAG,
+                "wear_media_connection route=true action_state_retained=" +
+                    "${state.connectionState}",
+            )
+        }
+    }
+
     private suspend fun pause(session: MediaController?) {
         if (session == null) {
-            // We can safely pause the global route, but without a session token
-            // Android gives us no proof that a later PLAY targets the same app.
-            dispatch(KeyEvent.KEYCODE_MEDIA_PAUSE)
-            policy.cancelResume()
-            Log.i(TAG, "wear_media_action action=PAUSE path=MEDIA_KEY verified=false reason=NO_SESSION")
+            // Notification access may be disabled or the media app may expose
+            // its session a little later than the wear event.  The explicit
+            // PAUSE key is still a valid fallback; retain a guarded fallback
+            // marker so a subsequent one-ear insertion can send PLAY exactly
+            // once instead of silently losing the resume transition.
+            val dispatched = dispatch(KeyEvent.KEYCODE_MEDIA_PAUSE)
+            val verified = dispatched && waitForGlobalNotPlaying()
+            if (dispatched) {
+                pausedWithMediaKeyFallback = true
+                Log.i(
+                    TAG,
+                    "wear_media_action action=PAUSE path=MEDIA_KEY " +
+                        "verified=$verified reason=MEDIA_SESSION_UNAVAILABLE",
+                )
+            } else {
+                policy.cancelResume()
+                clearPausedSession()
+                Log.i(
+                    TAG,
+                    "wear_media_action action=PAUSE path=MEDIA_KEY " +
+                        "verified=false reason=NO_SESSION_OR_NO_STATE_CHANGE",
+                )
+            }
             return
         }
 
@@ -205,12 +249,36 @@ internal class WearMediaPlaybackController(
     private suspend fun resumeIfSameSession() {
         val token = pausedSessionToken
         if (token == null) {
-            policy.cancelResume()
+            if (!pausedWithMediaKeyFallback) {
+                policy.cancelResume()
+                Log.i(
+                    TAG,
+                    "wear_media_action action=PLAY path=BLOCKED verified=false " +
+                        "reason=MEDIA_SESSION_UNAVAILABLE",
+                )
+                return
+            }
+
+            // If another session is already playing, the user or another app
+            // has taken over the route. Never toggle it with a global key.
+            if (sessionResolver.currentPlaying() != null || audioManager?.isMusicActive == true) {
+                Log.i(
+                    TAG,
+                    "wear_media_action action=PLAY path=BLOCKED verified=false " +
+                        "reason=USER_OR_OTHER_SESSION_PLAYING",
+                )
+                clearPausedSession()
+                return
+            }
+
+            val dispatched = dispatch(KeyEvent.KEYCODE_MEDIA_PLAY)
+            val verified = dispatched && waitForGlobalPlaying()
             Log.i(
                 TAG,
-                "wear_media_action action=PLAY path=BLOCKED verified=false " +
+                "wear_media_action action=PLAY path=MEDIA_KEY verified=$verified " +
                     "reason=MEDIA_SESSION_UNAVAILABLE",
             )
+            clearPausedSession()
             return
         }
 
@@ -255,10 +323,26 @@ internal class WearMediaPlaybackController(
     }
 
     private suspend fun waitForPlaying(token: MediaSession.Token): Boolean =
-        waitForState(token) { it == PlaybackState.STATE_PLAYING }
+        waitForState(token) { it.isActivePlaybackState() }
 
     private suspend fun waitForNotPlaying(token: MediaSession.Token): Boolean =
-        waitForState(token) { it != PlaybackState.STATE_PLAYING }
+        waitForState(token) { !it.isActivePlaybackState() }
+
+    private suspend fun waitForGlobalPlaying(): Boolean {
+        repeat(6) {
+            if (audioManager?.isMusicActive == true) return true
+            delay(120L)
+        }
+        return false
+    }
+
+    private suspend fun waitForGlobalNotPlaying(): Boolean {
+        repeat(6) {
+            if (audioManager?.isMusicActive == false) return true
+            delay(120L)
+        }
+        return false
+    }
 
     private suspend fun waitForState(
         token: MediaSession.Token,
@@ -276,6 +360,7 @@ internal class WearMediaPlaybackController(
         pausedSessionToken = null
         pausedPackageName = null
         pausedPositionUpdateTime = null
+        pausedWithMediaKeyFallback = false
     }
 
     private fun AirPodsState.hasFreshWearEvidence(): Boolean {
@@ -292,11 +377,15 @@ internal class WearMediaPlaybackController(
         return profileMatches && elapsedFresh
     }
 
-    private fun dispatch(keyCode: Int) {
-        val manager = audioManager ?: return
+    private fun dispatch(keyCode: Int): Boolean {
+        val manager = audioManager ?: return false
         Log.i(TAG, "wear_media_action action=${KeyEvent.keyCodeToString(keyCode)} path=MEDIA_KEY")
-        manager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
-        manager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
+        return runCatching {
+            // Android treats the pair as one button gesture. Sending only
+            // ACTION_DOWN is ignored by some Samsung media stacks.
+            manager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
+            manager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
+        }.isSuccess
     }
 
     private companion object {
