@@ -199,7 +199,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun testOverlay() {
         val context = getApplication<Application>()
         if (Settings.canDrawOverlays(context)) {
-            ContextCompat.startForegroundService(context, Intent(context, AirPodsOverlayService::class.java))
+            context.startService(Intent(context, AirPodsOverlayService::class.java))
         }
     }
 

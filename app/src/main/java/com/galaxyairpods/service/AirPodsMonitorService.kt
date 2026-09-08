@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.IBinder
 import android.provider.Settings
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.galaxyairpods.MainActivity
@@ -45,6 +46,7 @@ class AirPodsMonitorService : Service() {
     private lateinit var scanner: AirPodsBleScanner
     private lateinit var scannerLease: AirPodsScannerLease
     private lateinit var updateManager: UpdateManager
+    private var foregroundReady = false
 
     override fun onCreate() {
         super.onCreate()
@@ -55,7 +57,11 @@ class AirPodsMonitorService : Service() {
         updateManager = UpdateManager.shared(this)
 
         createNotificationChannel()
-        startForegroundCompat(buildNotification(AirPodsState.empty()))
+        foregroundReady = startForegroundCompat(buildNotification(AirPodsState.empty()))
+        if (!foregroundReady) {
+            stopSelf()
+            return
+        }
         observePackets()
         observeBluetoothConnections()
         observePersistedBatteryFallback()
@@ -65,6 +71,7 @@ class AirPodsMonitorService : Service() {
 
     private fun observePersistedBatteryFallback() {
         serviceScope.launch {
+            var previousDisplayState: AirPodsState? = null
             dataStore.latestDisplayState.collect { stored ->
                 if (stored == null) return@collect
                 val live = repository.state.value
@@ -81,6 +88,20 @@ class AirPodsMonitorService : Service() {
                     caseBattery = displayState.caseBattery,
                     modelLabel = displayState.model.label,
                 )
+
+                val previous = previousDisplayState
+                val batteryChanged = previous != null && (
+                    previous.leftBattery != displayState.leftBattery ||
+                        previous.rightBattery != displayState.rightBattery ||
+                        previous.caseBattery != displayState.caseBattery ||
+                        previous.leftCharging != displayState.leftCharging ||
+                        previous.rightCharging != displayState.rightCharging ||
+                        previous.caseCharging != displayState.caseCharging
+                    )
+                if (batteryChanged && displayState.hasAnyBattery && dataStore.autoPopup.first()) {
+                    showOverlayIfPermitted()
+                }
+                previousDisplayState = displayState
             }
         }
     }
@@ -150,7 +171,12 @@ class AirPodsMonitorService : Service() {
                 )
 
                 val connectedNow = event.connected && !previous.connected
-                if (connectedNow) showOverlayIfPermitted()
+                // Wait for the first real battery sample before showing a
+                // background popup. The persisted-battery observer above will
+                // show it as soon as Samsung's HFP/metadata path delivers the
+                // value, instead of displaying an empty popup and losing the
+                // useful update.
+                if (connectedNow && displayState.hasAnyBattery) showOverlayIfPermitted()
             }
         }
     }
@@ -158,7 +184,11 @@ class AirPodsMonitorService : Service() {
     private fun showOverlayIfPermitted() {
         if (!Settings.canDrawOverlays(this)) return
         runCatching {
-            ContextCompat.startForegroundService(this, Intent(this, AirPodsOverlayService::class.java))
+            // This service is launched by our already-running foreground
+            // monitor. Starting a second FGS here is rejected on some Samsung
+            // builds when the activity is closed, so keep the popup service
+            // short-lived and ordinary.
+            startService(Intent(this, AirPodsOverlayService::class.java))
         }
     }
 
@@ -212,19 +242,20 @@ class AirPodsMonitorService : Service() {
         )
     }
 
-    private fun startForegroundCompat(notification: Notification) {
-        runCatching {
+    private fun startForegroundCompat(notification: Notification): Boolean {
+        return runCatching {
             startForeground(
                 NOTIFICATION_ID,
                 notification,
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
             )
-        }.onFailure {
-            stopSelf()
-        }
+        }.onFailure { error ->
+            Log.e(TAG, "Unable to promote monitor service to foreground", error)
+        }.isSuccess
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!foregroundReady) return START_NOT_STICKY
         // The system receiver can wake an already-running service when
         // Bluetooth is turned back on. Re-entering start() is idempotent and
         // restarts the BLE scan if the adapter was unavailable during onCreate.
@@ -234,8 +265,22 @@ class AirPodsMonitorService : Service() {
         return START_STICKY
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // Samsung's task manager may remove the process when the recent-apps
+        // card is swiped even though START_STICKY was requested. Re-arm the
+        // monitor immediately; the user's background-detection toggle is
+        // respected by the public stopService path.
+        runCatching {
+            ContextCompat.startForegroundService(
+                applicationContext,
+                Intent(applicationContext, AirPodsMonitorService::class.java),
+            )
+        }
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
-        scannerLease.close()
+        if (::scannerLease.isInitialized) scannerLease.close()
         serviceScope.cancel()
         super.onDestroy()
     }
@@ -243,6 +288,7 @@ class AirPodsMonitorService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     private companion object {
+        const val TAG = "AirPodsMonitorService"
         const val CHANNEL_ID = "airpods_detection"
         const val NOTIFICATION_ID = 1001
         const val AUTO_UPDATE_INTERVAL_MS = 30 * 60 * 1000L

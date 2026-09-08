@@ -148,8 +148,34 @@ class AirPodsDataStore(private val context: Context) {
         deviceName: String,
         model: AirPodsModel,
         battery: Int,
+    ) = applyClassicBatterySnapshot(
+        deviceId = deviceId,
+        deviceName = deviceName,
+        model = model,
+        mainBattery = battery,
+    )
+
+    /**
+     * Stores values reported by Android's classic Bluetooth stack. Some
+     * Samsung builds expose individual untethered metadata while others only
+     * expose one headset level, so every field is optional and unknown fields
+     * are deliberately kept instead of being replaced with zero/null.
+     */
+    suspend fun applyClassicBatterySnapshot(
+        deviceId: String,
+        deviceName: String,
+        model: AirPodsModel,
+        mainBattery: Int? = null,
+        leftBattery: Int? = null,
+        rightBattery: Int? = null,
+        caseBattery: Int? = null,
     ) {
-        if (battery !in 0..100) return
+        val validMain = mainBattery?.takeIf { it in 0..100 }
+        val validLeft = leftBattery?.takeIf { it in 0..100 } ?: validMain
+        val validRight = rightBattery?.takeIf { it in 0..100 } ?: validMain
+        val validCase = caseBattery?.takeIf { it in 0..100 }
+        if (validLeft == null && validRight == null && validCase == null) return
+
         val now = System.currentTimeMillis()
         context.airPodsPreferences.edit { preferences ->
             val storedModel = preferences[Keys.model]?.let { value ->
@@ -173,8 +199,9 @@ class AirPodsDataStore(private val context: Context) {
                 storedModel == AirPodsModel.AIRPODS && model != AirPodsModel.AIRPODS -> model.name
                 else -> storedModel.name
             }
-            preferences[Keys.leftBattery] = battery
-            preferences[Keys.rightBattery] = battery
+            validLeft?.let { preferences[Keys.leftBattery] = it }
+            validRight?.let { preferences[Keys.rightBattery] = it }
+            validCase?.let { preferences[Keys.caseBattery] = it }
             preferences[Keys.connected] = true
             preferences[Keys.detected] = true
             preferences[Keys.deviceName] = deviceName

@@ -1,6 +1,7 @@
 package com.galaxyairpods.data
 
 import com.galaxyairpods.data.bluetooth.parseIphoneAccessoryBattery
+import com.galaxyairpods.data.bluetooth.parseXEventBattery
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -24,5 +25,20 @@ class AirPodsHfpBatteryTest {
     @Test
     fun rejectsUnknownBatterySentinel() {
         assertNull(parseIphoneAccessoryBattery(listOf("1", "1", "15")))
+    }
+
+    @Test
+    fun parsesXEventBattery() {
+        assertEquals(37, parseXEventBattery(arrayOf("BATTERY", "3", "8", "0", "0")))
+    }
+
+    @Test
+    fun parsesPrimitiveXEventArguments() {
+        assertEquals(37, parseXEventBattery(intArrayOf(3, 8, 0, 0)))
+    }
+
+    @Test
+    fun rejectsMalformedXEventBattery() {
+        assertNull(parseXEventBattery(listOf("BATTERY", "3", "1")))
     }
 }

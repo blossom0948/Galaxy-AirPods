@@ -162,11 +162,11 @@ class AirPodsBleScanner(private val context: Context) {
                 return
             }
             lastValidatedAt = 0L
-            if (startBleScan(scanner, scanMode, filtered = true)) {
-                startPendingIntentScan(scanner, scanMode)
-                scheduleLegacyScanFallback()
-                return
-            }
+            // Samsung firmware has shipped BLE offload filters that accept an
+            // AirPods scan but never deliver the rotating Apple payload to the
+            // app. Receive the raw advertisements first and apply the strict
+            // parser in-process instead. This is the same compatibility shape
+            // used by CAPod's unfiltered troubleshooting path.
             if (startBleScan(scanner, scanMode, filtered = false)) {
                 startPendingIntentScan(scanner, scanMode)
                 scheduleLegacyScanFallback()
@@ -341,6 +341,7 @@ class AirPodsBleScanner(private val context: Context) {
 
         val systemFilter = IntentFilter().apply {
             addAction(BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED)
+            addAction(AirPodsSystemReceiver.HF_INDICATORS_VALUE_CHANGED_ACTION)
             addAction(AirPodsSystemReceiver.BATTERY_LEVEL_CHANGED_ACTION)
         }
         val vendorFilter = IntentFilter().apply {
@@ -398,9 +399,11 @@ class AirPodsBleScanner(private val context: Context) {
             intent,
             flags,
         )
-        // Match the protocol byte only: pairing mode is 0x0E and paired mode
-        // is 0x19, so filtering on the old length drops valid cases.
-        val filters = AIRPODS_SCAN_FILTERS
+        // Do not use an offloaded manufacturer filter here. Several Samsung
+        // Bluetooth stacks accept the filter but silently omit Apple's
+        // rotating advertisements from PendingIntent delivery. The receiver
+        // parses and validates the raw records itself.
+        val filters: List<ScanFilter>? = null
         val settings = ScanSettings.Builder()
             .setScanMode(scanMode)
             .setCallbackType(ScanSettings.CALLBACK_TYPE_ALL_MATCHES)
@@ -517,7 +520,8 @@ class AirPodsBleScanner(private val context: Context) {
 
         if (current.connected) {
             connectedDevices[current.deviceId]?.let { device ->
-                BluetoothBatteryReader.read(device)?.let { battery ->
+                val battery = BluetoothBatteryReader.readSnapshot(device)
+                if (battery.hasValue) {
                     persistSystemBattery(current, battery)
                 }
             }
@@ -569,7 +573,10 @@ class AirPodsBleScanner(private val context: Context) {
         return AirPodsModel.fromBluetoothName(name)
     }
 
-    private fun persistSystemBattery(event: BluetoothAirPodsEvent, battery: Int) {
+    private fun persistSystemBattery(
+        event: BluetoothAirPodsEvent,
+        battery: BluetoothBatteryReader.Snapshot,
+    ) {
         val now = System.currentTimeMillis()
         val previous = systemBatterySamples[event.deviceId]
         if (previous != null && previous.battery == battery &&
@@ -578,11 +585,14 @@ class AirPodsBleScanner(private val context: Context) {
 
         systemBatterySamples[event.deviceId] = BatterySample(battery, now)
         monitorScope.launch(Dispatchers.IO) {
-            dataStore.applyClassicBatteryLevel(
+            dataStore.applyClassicBatterySnapshot(
                 deviceId = event.deviceId,
                 deviceName = event.deviceName,
                 model = event.model,
-                battery = battery,
+                mainBattery = battery.main,
+                leftBattery = battery.left,
+                rightBattery = battery.right,
+                caseBattery = battery.caseBattery,
             )
         }
     }
@@ -599,9 +609,7 @@ class AirPodsBleScanner(private val context: Context) {
     private fun hasScanPermission(): Boolean =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
-                ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED &&
-                ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED &&
-                ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+                ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
         } else {
             ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) ==
                 PackageManager.PERMISSION_GRANTED
@@ -633,7 +641,7 @@ class AirPodsBleScanner(private val context: Context) {
     }
 
     private data class BatterySample(
-        val battery: Int,
+        val battery: BluetoothBatteryReader.Snapshot,
         val seenAt: Long,
     )
 

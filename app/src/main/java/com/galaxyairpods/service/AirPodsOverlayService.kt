@@ -1,8 +1,5 @@
 package com.galaxyairpods.service
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.content.Intent
 import android.graphics.PixelFormat
 import android.os.IBinder
@@ -26,7 +23,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.compose.ui.unit.dp
-import androidx.core.app.NotificationCompat
 import androidx.lifecycle.LifecycleService
 import com.galaxyairpods.data.persistence.AirPodsDataStore
 import com.galaxyairpods.design.AirPodsGalaxyTheme
@@ -47,10 +43,10 @@ import kotlinx.coroutines.launch
 /**
  * Shows a short-lived system overlay containing the last real BLE state.
  *
- * This is a foreground service because Android can otherwise stop a service
- * started while the activity is not visible. The monitor service starts it
- * only after an actual connection or parsed packet event, and the window is
- * never created without SYSTEM_ALERT_WINDOW permission.
+ * The monitor service is already a connected-device foreground service. This
+ * short-lived helper is started by that service and only owns the overlay
+ * window, avoiding a second foreground-service start that Samsung/Android can
+ * reject while the app is backgrounded.
  */
 class AirPodsOverlayService : LifecycleService() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -66,19 +62,6 @@ class AirPodsOverlayService : LifecycleService() {
         dataStore = AirPodsDataStore(this)
 
         if (!Settings.canDrawOverlays(this)) {
-            stopSelf()
-            return
-        }
-
-        createNotificationChannel()
-        val foregroundStarted = runCatching {
-            startForeground(
-                NOTIFICATION_ID,
-                buildNotification(),
-                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
-            )
-        }.isSuccess
-        if (!foregroundStarted) {
             stopSelf()
             return
         }
@@ -149,43 +132,17 @@ class AirPodsOverlayService : LifecycleService() {
             .onFailure { stopSelf() }
     }
 
-    private fun createNotificationChannel() {
-        getSystemService(NotificationManager::class.java)?.createNotificationChannel(
-            NotificationChannel(
-                CHANNEL_ID,
-                "AirPods 팝업",
-                NotificationManager.IMPORTANCE_LOW,
-            ).apply {
-                description = "AirPods 상태 팝업을 표시하는 동안 사용합니다."
-            },
-        )
-    }
-
-    private fun buildNotification(): Notification = NotificationCompat.Builder(this, CHANNEL_ID)
-        .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
-        .setContentTitle("AirPods Galaxy")
-        .setContentText("AirPods 상태 팝업 표시 중")
-        .setCategory(NotificationCompat.CATEGORY_SERVICE)
-        .setOnlyAlertOnce(true)
-        .setOngoing(false)
-        .build()
-
     override fun onDestroy() {
         refreshJob?.cancel()
         hideJob?.cancel()
         overlayView?.let { view -> runCatching { windowManager?.removeView(view) } }
         overlayView = null
         serviceScope.cancel()
-        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent): IBinder? = super.onBind(intent)
 
-    private companion object {
-        const val CHANNEL_ID = "airpods_overlay"
-        const val NOTIFICATION_ID = 1002
-    }
 }
 
 @Composable
