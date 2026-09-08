@@ -16,8 +16,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.EOFException
 import java.io.File
 import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.io.IOException
 import java.security.MessageDigest
 import java.net.HttpURLConnection
 import java.net.URL
@@ -223,53 +226,122 @@ class UpdateManager(context: Context) {
     }
 
     private fun download(info: UpdateInfo, target: File) {
-        val connection = URL(info.apkUrl).openConnection() as HttpURLConnection
-        connection.instanceFollowRedirects = true
-        connection.useCaches = false
-        connection.connectTimeout = 15_000
-        connection.readTimeout = 60_000
-        connection.setRequestProperty("User-Agent", "AirPodsGalaxy/${BuildConfig.VERSION_NAME}")
-        // GitHub release assets are served through a redirect. Do not let a
-        // proxy negotiate gzip/chunked content while we validate the APK bytes.
-        connection.setRequestProperty("Accept-Encoding", "identity")
-        connection.connect()
-        if (connection.responseCode !in 200..299) error("HTTP ${connection.responseCode}")
-
-        val total = connection.contentLengthLong
-        var copied = 0L
         val partial = File(target.parentFile, "${target.name}.part")
         if (partial.exists() && !partial.delete()) {
             error("이전 다운로드 임시 파일을 정리하지 못했습니다")
         }
-        try {
-            connection.inputStream.buffered().use { input ->
-                partial.outputStream().buffered().use { output ->
-                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                    while (true) {
-                        val count = input.read(buffer)
-                        if (count < 0) break
-                        if (count == 0) continue
-                        output.write(buffer, 0, count)
-                        copied += count
-                        val progress = if (total > 0) (copied * 100 / total).toInt() else 0
-                        _state.value = UpdateState.Downloading(info, progress.coerceIn(0, 99))
+
+        var total = -1L
+        var attempts = 0
+        while (true) {
+            val offset = partial.length()
+            if (total > 0L && offset >= total) break
+
+            val connection = URL(info.apkUrl).openConnection() as HttpURLConnection
+            connection.instanceFollowRedirects = true
+            connection.useCaches = false
+            connection.connectTimeout = 15_000
+            connection.readTimeout = 15_000
+            connection.setRequestProperty("User-Agent", "AirPodsGalaxy/${BuildConfig.VERSION_NAME}")
+            // GitHub release assets are served through a redirect. Do not let a
+            // proxy negotiate gzip/chunked content while we validate the APK bytes.
+            connection.setRequestProperty("Accept-Encoding", "identity")
+            // If a mobile connection stalls after most of the file, continue
+            // from the exact byte already saved instead of restarting at zero.
+            connection.setRequestProperty("Range", "bytes=$offset-")
+
+            var responseCompleted = false
+            try {
+                connection.connect()
+                val responseCode = connection.responseCode
+                if (offset > 0L && responseCode == HttpURLConnection.HTTP_OK) {
+                    // The server ignored Range. Restart once from a clean file so
+                    // the full response is not appended to a partial APK.
+                    if (!partial.delete()) error("다운로드를 처음부터 다시 시작하지 못했습니다")
+                    total = -1L
+                    continue
+                }
+                if (responseCode !in 200..299) error("HTTP $responseCode")
+
+                val range = parseContentRange(connection.getHeaderField("Content-Range"))
+                if (responseCode == HttpURLConnection.HTTP_PARTIAL &&
+                    range != null && range.first != offset
+                ) {
+                    error("APK 다운로드 위치가 일치하지 않습니다")
+                }
+                val responseLength = connection.contentLengthLong
+                total = range?.third
+                    ?: total.takeIf { it > 0L }
+                    ?: responseLength.takeIf { it > 0L }?.let { offset + it }
+                    ?: -1L
+                val expectedBytes = responseLength.takeIf { it > 0L }
+                    ?: total.takeIf { it > 0L }?.minus(offset)?.takeIf { it > 0L }
+
+                connection.inputStream.buffered().use { input ->
+                    FileOutputStream(partial, true).buffered().use { output ->
+                        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                        var received = 0L
+                        while (expectedBytes == null || received < expectedBytes) {
+                            val requested = if (expectedBytes != null) {
+                                (expectedBytes - received).toInt().coerceAtMost(buffer.size)
+                            } else {
+                                buffer.size
+                            }
+                            val count = input.read(buffer, 0, requested)
+                            if (count < 0) {
+                                if (expectedBytes != null && received < expectedBytes) {
+                                    throw EOFException("APK 다운로드가 끝나기 전에 연결이 종료되었습니다")
+                                }
+                                break
+                            }
+                            if (count == 0) continue
+                            output.write(buffer, 0, count)
+                            received += count
+                            val copied = offset + received
+                            val progress = if (total > 0L) {
+                                (copied * 100 / total).toInt()
+                            } else {
+                                0
+                            }
+                            _state.value = UpdateState.Downloading(
+                                info,
+                                progress.coerceIn(0, 99),
+                            )
+                        }
+                        output.flush()
                     }
                 }
+
+                attempts = 0
+                responseCompleted = true
+            } catch (error: IOException) {
+                attempts += 1
+                if (attempts > MAX_DOWNLOAD_ATTEMPTS) throw error
+                Thread.sleep(DOWNLOAD_RETRY_DELAY_MS * attempts)
+            } finally {
+                connection.disconnect()
             }
-            if (total > 0L && copied != total) {
-                error("APK 다운로드가 끝나기 전에 연결이 종료되었습니다")
-            }
-            if (target.exists() && !target.delete()) {
-                error("이전 APK 파일을 교체하지 못했습니다")
-            }
-            if (!partial.renameTo(target)) error("APK 파일을 저장하지 못했습니다")
-            _state.value = UpdateState.Downloading(info, 100)
-        } catch (error: Throwable) {
-            partial.delete()
-            throw error
-        } finally {
-            connection.disconnect()
+
+            if (responseCompleted && (total <= 0L || partial.length() >= total)) break
         }
+
+        if (total > 0L && partial.length() != total) {
+            error("APK 다운로드 크기가 일치하지 않습니다")
+        }
+        if (target.exists() && !target.delete()) {
+            error("이전 APK 파일을 교체하지 못했습니다")
+        }
+        if (!partial.renameTo(target)) error("APK 파일을 저장하지 못했습니다")
+        _state.value = UpdateState.Downloading(info, 100)
+    }
+
+    private fun parseContentRange(value: String?): Triple<Long, Long, Long?>? {
+        val match = Regex("bytes\\s+(\\d+)-(\\d+)/(\\d+|\\*)").find(value.orEmpty())
+            ?: return null
+        val start = match.groupValues[1].toLongOrNull() ?: return null
+        val end = match.groupValues[2].toLongOrNull() ?: return null
+        val total = match.groupValues[3].toLongOrNull()
+        return Triple(start, end, total)
     }
 
     private fun verifyApk(file: File, info: UpdateInfo) {
@@ -337,6 +409,8 @@ class UpdateManager(context: Context) {
         private const val MANIFEST_CACHE_BUCKET_MS = 5 * 60 * 1000L
         private const val AUTO_CHECK_INTERVAL_MS = 30 * 60 * 1000L
         private const val AUTO_RETRY_COOLDOWN_MS = 60 * 60 * 1000L
+        private const val MAX_DOWNLOAD_ATTEMPTS = 5
+        private const val DOWNLOAD_RETRY_DELAY_MS = 500L
         private const val MANIFEST_URL =
             "https://raw.githubusercontent.com/blossom0948/Galaxy-AirPods/main/update.json"
 
