@@ -179,11 +179,16 @@ private fun UpdateCard(
                 }
                 is UpdateState.Error -> {
                     Text(state.message, color = MaterialTheme.colorScheme.error)
-                    Button(onClick = onCheckForUpdates) { Text("다시 확인") }
                 }
             }
-            if (state is UpdateState.UpToDate || state is UpdateState.Error) {
-                Button(onClick = onCheckForUpdates) { Text("업데이트 확인") }
+            if (state !is UpdateState.Checking &&
+                state !is UpdateState.Downloading &&
+                state !is UpdateState.Ready &&
+                state !is UpdateState.Installing
+            ) {
+                Button(onClick = onCheckForUpdates) {
+                    Text("수동으로 업데이트 확인")
+                }
             }
         }
     }
