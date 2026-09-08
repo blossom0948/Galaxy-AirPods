@@ -1,6 +1,5 @@
 package com.galaxyairpods.ui
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.NavigationBar
@@ -17,7 +16,6 @@ import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.galaxyairpods.design.AirPodsGalaxyTheme
-import com.galaxyairpods.ui.components.AirPodsPopupSurface
 import com.galaxyairpods.ui.screens.HomeScreen
 import com.galaxyairpods.ui.screens.SettingsScreen
 import com.galaxyairpods.update.UpdateState
@@ -37,7 +35,6 @@ fun AirPodsGalaxyApp(viewModel: AppViewModel = viewModel()) {
     val destination = AppDestination.entries.firstOrNull { it.name == destinationName }
         ?: AppDestination.HOME
     val airPodsState by viewModel.airPodsState.collectAsStateWithLifecycle()
-    val popupState by viewModel.popupState.collectAsStateWithLifecycle()
     val autoPopup by viewModel.autoPopup.collectAsStateWithLifecycle()
     val showOnCaseOpen by viewModel.showOnCaseOpen.collectAsStateWithLifecycle()
     val popupDuration by viewModel.popupDuration.collectAsStateWithLifecycle()
@@ -102,19 +99,5 @@ fun AirPodsGalaxyApp(viewModel: AppViewModel = viewModel()) {
             }
         }
 
-        if (popupState.isVisible) {
-            BackHandler(enabled = true) { viewModel.dismissPopup() }
-            AirPodsPopupSurface(
-                popup = popupState,
-                settings = viewModel.motionSettings,
-                popupDurationSeconds = popupDuration,
-                reducedMotion = reducedMotion,
-                onDismiss = viewModel::dismissPopup,
-                onHide = viewModel::hidePopup,
-                onBatteryVisible = viewModel::markPopupBatteryVisible,
-                onIdle = viewModel::markPopupIdle,
-                onDraggingChanged = viewModel.popupController::setDragging,
-            )
-        }
     }
 }

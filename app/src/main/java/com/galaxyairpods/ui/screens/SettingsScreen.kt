@@ -5,6 +5,7 @@ import android.net.Uri
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.app.NotificationManagerCompat
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -61,6 +62,9 @@ fun SettingsScreen(
 ) {
     val context = LocalContext.current
     val overlayGranted = Settings.canDrawOverlays(context)
+    val mediaSessionGranted = NotificationManagerCompat
+        .getEnabledListenerPackages(context)
+        .contains(context.packageName)
     val permissionsLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { onStartScanning() }
@@ -139,6 +143,28 @@ fun SettingsScreen(
                     )
                 }) { Text("오버레이 권한 설정") }
                 Button(onClick = onTestOverlay, enabled = overlayGranted) { Text("팝업 테스트") }
+            }
+        }
+
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp)) {
+                Text("미디어 제어 연결", style = MaterialTheme.typography.titleMedium)
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    if (mediaSessionGranted) {
+                        "MediaSession 직접 제어 사용 가능"
+                    } else {
+                        "전역 미디어 키를 먼저 사용합니다. 일부 영상 앱은 알림 접근을 허용하면 더 정확하게 제어됩니다."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                Button(onClick = {
+                    context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                }) {
+                    Text(if (mediaSessionGranted) "알림 접근 설정 열기" else "알림 접근 허용")
+                }
             }
         }
     }

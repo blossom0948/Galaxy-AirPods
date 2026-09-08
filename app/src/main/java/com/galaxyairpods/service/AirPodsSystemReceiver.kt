@@ -29,7 +29,10 @@ class AirPodsSystemReceiver : BroadcastReceiver() {
         val appContext = context.applicationContext
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
             try {
-                if (AirPodsDataStore(appContext).backgroundDetection.first()) {
+                val store = AirPodsDataStore(appContext)
+                val monitorRequired = store.backgroundDetection.first() ||
+                    (store.wearDetectionEnabled.first() && store.automaticMediaControlEnabled.first())
+                if (monitorRequired) {
                     runCatching {
                         ContextCompat.startForegroundService(
                             appContext,

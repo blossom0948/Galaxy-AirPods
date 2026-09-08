@@ -2,6 +2,8 @@ package com.galaxyairpods.service
 
 import android.content.Context
 import android.media.AudioManager
+import android.media.session.MediaController
+import android.media.session.PlaybackState
 import android.view.KeyEvent
 import android.util.Log
 import com.galaxyairpods.domain.model.AirPodsWearState
@@ -74,26 +76,72 @@ private fun AirPodsWearState.toEarMask(): Int? = when (this) {
 internal class WearMediaPlaybackController(context: Context) {
     private val audioManager = context.getSystemService(AudioManager::class.java)
     private val policy = WearPlaybackPolicy()
+    private var pausedSession: MediaController? = null
 
     fun onWearStateChanged(state: AirPodsWearState) {
+        val playingSession = currentPlayingSession()
+        val mediaWasPlaying = playingSession != null || audioManager?.isMusicActive == true
         val action = policy.onWearStateChanged(
             state = state,
-            mediaWasPlaying = audioManager?.isMusicActive == true,
+            mediaWasPlaying = mediaWasPlaying,
+        )
+        Log.i(
+            TAG,
+            "wear_state state=$state mediaWasPlaying=$mediaWasPlaying action=$action " +
+                "session=${playingSession?.packageName ?: "none"}",
         )
         when (action) {
-            WearMediaAction.PAUSE -> dispatch(KeyEvent.KEYCODE_MEDIA_PAUSE)
-            WearMediaAction.PLAY -> dispatch(KeyEvent.KEYCODE_MEDIA_PLAY)
+            WearMediaAction.PAUSE -> pause(playingSession)
+            WearMediaAction.PLAY -> play()
             WearMediaAction.NONE -> Unit
         }
     }
 
     fun reset() {
         policy.reset()
+        pausedSession = null
+    }
+
+    private fun currentPlayingSession(): MediaController? =
+        AirPodsMediaNotificationListener.current()
+            ?.activeControllers()
+            ?.firstOrNull { controller ->
+                controller.playbackState?.state == PlaybackState.STATE_PLAYING
+            }
+
+    private fun pause(session: MediaController?) {
+        if (session != null) {
+            runCatching {
+                session.transportControls.pause()
+                pausedSession = session
+                Log.i(TAG, "wear_media_action action=PAUSE path=MEDIA_SESSION package=${session.packageName}")
+            }.onFailure {
+                dispatch(KeyEvent.KEYCODE_MEDIA_PAUSE)
+            }
+        } else {
+            dispatch(KeyEvent.KEYCODE_MEDIA_PAUSE)
+        }
+    }
+
+    private fun play() {
+        val session = pausedSession
+        if (session != null) {
+            runCatching {
+                session.transportControls.play()
+                pausedSession = null
+                Log.i(TAG, "wear_media_action action=PLAY path=MEDIA_SESSION package=${session.packageName}")
+            }.onFailure {
+                pausedSession = null
+                dispatch(KeyEvent.KEYCODE_MEDIA_PLAY)
+            }
+        } else {
+            dispatch(KeyEvent.KEYCODE_MEDIA_PLAY)
+        }
     }
 
     private fun dispatch(keyCode: Int) {
         val manager = audioManager ?: return
-        Log.i(TAG, "wear_media_action action=${KeyEvent.keyCodeToString(keyCode)}")
+        Log.i(TAG, "wear_media_action action=${KeyEvent.keyCodeToString(keyCode)} path=MEDIA_KEY")
         manager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
         manager.dispatchMediaKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
     }

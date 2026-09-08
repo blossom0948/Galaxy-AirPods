@@ -207,15 +207,25 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         viewModelScope.launch {
-            dataStore.backgroundDetection.collect { enabled ->
-                if (enabled) startBackgroundServiceIfReady() else stopBackgroundService()
+            combine(
+                dataStore.backgroundDetection,
+                dataStore.wearDetectionEnabled,
+                dataStore.automaticMediaControlEnabled,
+            ) { backgroundEnabled, wearEnabled, mediaControlEnabled ->
+                backgroundEnabled || (wearEnabled && mediaControlEnabled)
+            }.collect { monitorRequired ->
+                if (monitorRequired) startBackgroundServiceIfReady() else stopBackgroundService()
             }
         }
     }
 
     fun startScanning() {
         scannerLease.start()
-        if (backgroundDetection.value) startBackgroundServiceIfReady()
+        if (backgroundDetection.value ||
+            (wearDetectionEnabled.value && automaticMediaControlEnabled.value)
+        ) {
+            startBackgroundServiceIfReady()
+        }
     }
 
     fun setAutoPopup(enabled: Boolean) {

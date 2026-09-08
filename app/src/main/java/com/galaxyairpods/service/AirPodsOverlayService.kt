@@ -242,7 +242,7 @@ private fun OverlayNotice(
                 .heightIn(max = 520.dp)
                 .verticalScroll(rememberScrollState()),
             shape = MaterialTheme.shapes.extraLarge,
-            color = MaterialTheme.colorScheme.surface,
+            color = Color.White,
             tonalElevation = 0.dp,
             shadowElevation = 16.dp,
         ) {
