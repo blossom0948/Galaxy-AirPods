@@ -20,15 +20,39 @@ internal object AapBatteryProtocol {
         0x04, 0x00, 0x04, 0x00, 0x30, 0x00, 0x05, 0x00,
     )
 
-    /** Default notification profile, sent once after the connect response. */
+    /**
+     * Notification masks used by different AirPods/Samsung generations.
+     *
+     * v0.3.8 registered both EF and FF. Later media-control changes reduced
+     * this to one mask (eventually FE), which still delivered ear events on
+     * some phones but could omit the 0x0004 battery notification. Register
+     * the known-compatible masks in one session so the battery path keeps the
+     * old working behaviour while retaining the newer ear-detection mask.
+     */
     val notificationProfiles: List<Pair<String, ByteArray>> = listOf(
-        "FF" to byteArrayOf(
+        "FE_EAR_COMPAT" to byteArrayOf(
             0x04, 0x00, 0x04, 0x00, 0x0F, 0x00,
-            // FF FF FE FF is the AACP subscribe-all mask.  FF FF FF FF is
-            // accepted by some firmware as a no-op but does not reliably
-            // enable 0x0006 ear-detection notifications on Samsung routes.
             0xFF.toByte(), 0xFF.toByte(), 0xFE.toByte(), 0xFF.toByte(),
         ),
+        "EF_COMPAT" to byteArrayOf(
+            0x04, 0x00, 0x04, 0x00, 0x0F, 0x00,
+            0xFF.toByte(), 0xFF.toByte(), 0xEF.toByte(), 0xFF.toByte(),
+        ),
+        "FF" to byteArrayOf(
+            0x04, 0x00, 0x04, 0x00, 0x0F, 0x00,
+            0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(),
+        ),
+    )
+
+    /**
+     * The v0.3.8 client sent the two original masks immediately after the
+     * handshake. Keep that preflight for firmware that only applies the
+     * registration during the initial session setup; the response-gated full
+     * registration in the client remains the normal path.
+     */
+    val legacyPreflightNotificationProfiles: List<Pair<String, ByteArray>> = listOf(
+        notificationProfiles.first { it.first == "EF_COMPAT" },
+        notificationProfiles.first { it.first == "FF" },
     )
 
     fun parseFrame(raw: ByteArray): AapFrame? {
@@ -85,6 +109,10 @@ internal object AapBatteryProtocol {
             // values over 100 are invalid for a percentage.
             if (percent > 100 || percent == 0x7F || percent == 0xFF) return@repeat
             if (status !in VALID_STATUSES) return@repeat
+            // A disconnected component is not a fresh battery sample. On
+            // Samsung it is commonly reported as 0%, and accepting it here
+            // would overwrite the last real pod value when the case closes.
+            if (status == STATUS_DISCONNECTED) return@repeat
             val reading = AapBatteryReading(percent, status.toCharging())
             when (component) {
                 COMPONENT_LEFT -> left = reading

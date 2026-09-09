@@ -45,6 +45,25 @@ class AapBatteryProtocolTest {
     }
 
     @Test
+    fun ignoresDisconnectedComponentInsteadOfPromotingZeroToBattery() {
+        val frame = message(
+            0x04, 0x00, 0x04, 0x00, 0x04, 0x00, 0x03,
+            0x04, 0x01, 0x00, 0x04, 0x01,
+            0x02, 0x01, 0x62, 0x02, 0x01,
+            0x08, 0x01, 0x44, 0x02, 0x01,
+        )
+
+        val parsed = AapBatteryProtocol.parseBattery(
+            AapBatteryProtocol.parseFrame(frame) as AapFrame.Message,
+        )
+
+        assertNotNull(parsed)
+        assertNull(parsed?.left)
+        assertEquals(98, parsed?.right?.percent)
+        assertEquals(68, parsed?.case?.percent)
+    }
+
+    @Test
     fun doesNotCopySingleUnknownComponentToEitherEar() {
         val frame = message(
             0x04, 0x00, 0x04, 0x00, 0x04, 0x00, 0x01,
@@ -61,13 +80,22 @@ class AapBatteryProtocolTest {
         assertEquals(16, AapBatteryProtocol.handshake.size)
         assertEquals(0x00, AapBatteryProtocol.handshake[0].toInt())
         assertEquals(0x01, AapBatteryProtocol.handshake[4].toInt())
-        assertEquals(1, AapBatteryProtocol.notificationProfiles.size)
+        assertEquals(3, AapBatteryProtocol.notificationProfiles.size)
+        assertEquals(2, AapBatteryProtocol.legacyPreflightNotificationProfiles.size)
         assertTrue(AapBatteryProtocol.notificationProfiles.all { it.second.size == 10 })
         assertEquals(
-            listOf(0xFF, 0xFF, 0xFE, 0xFF),
-            AapBatteryProtocol.notificationProfiles.single().second
-                .takeLast(4)
-                .map { it.toInt() and 0xFF },
+            listOf("EF_COMPAT", "FF"),
+            AapBatteryProtocol.legacyPreflightNotificationProfiles.map { it.first },
+        )
+        assertEquals(
+            listOf(
+                listOf(0xFF, 0xFF, 0xFE, 0xFF),
+                listOf(0xFF, 0xFF, 0xEF, 0xFF),
+                listOf(0xFF, 0xFF, 0xFF, 0xFF),
+            ),
+            AapBatteryProtocol.notificationProfiles.map { (_, bytes) ->
+                bytes.takeLast(4).map { it.toInt() and 0xFF }
+            },
         )
     }
 

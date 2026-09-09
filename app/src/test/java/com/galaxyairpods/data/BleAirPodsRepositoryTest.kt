@@ -244,4 +244,42 @@ class BleAirPodsRepositoryTest {
         assertEquals(null, merged.leftBattery)
         assertEquals(null, merged.batteryCapturedAt)
     }
+
+    @Test
+    fun coarseBleDoesNotDowngradeAnExactAapBatterySample() {
+        val current = AirPodsState(
+            deviceId = "classic-address",
+            deviceProfileId = "profile-a",
+            model = AirPodsModel.AIRPODS_PRO,
+            leftBattery = 96,
+            rightBattery = 83,
+            caseBattery = 44,
+            batterySource = "AAP_CLASSIC_EXACT",
+            batteryCapturedAt = 900L,
+            detected = true,
+            connectionState = AirPodsConnectionState.ANDROID_CONNECTED,
+        )
+        val coarse = ParsedAirPodsPacket(
+            model = AirPodsModel.AIRPODS_PRO,
+            leftBattery = 90,
+            rightBattery = 80,
+            caseBattery = 40,
+            leftCharging = false,
+            rightCharging = false,
+            caseCharging = false,
+            leftInCase = false,
+            rightInCase = false,
+            caseOpen = true,
+            parserVersion = "apple-proximity-public-v4",
+            confidence = DataConfidence.LIVE,
+        )
+
+        val merged = mergeParsedState(current, "ble-address", coarse, 1_000L, deviceProfileId = "profile-a")
+
+        assertEquals(96, merged.leftBattery)
+        assertEquals(83, merged.rightBattery)
+        assertEquals(44, merged.caseBattery)
+        assertEquals("AAP_CLASSIC_EXACT", merged.batterySource)
+        assertEquals(900L, merged.batteryCapturedAt)
+    }
 }

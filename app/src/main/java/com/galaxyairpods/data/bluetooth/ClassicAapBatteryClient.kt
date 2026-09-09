@@ -16,6 +16,9 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.coroutineContext
@@ -33,6 +36,7 @@ import org.lsposed.hiddenapibypass.HiddenApiBypass
 @SuppressLint("MissingPermission")
 internal class ClassicAapBatteryClient {
     private val socketFactory = PublicClassicL2capSocketFactory()
+    private val outputMutex = Mutex()
 
     @Volatile
     private var activeSocket: BluetoothSocket? = null
@@ -71,6 +75,12 @@ internal class ClassicAapBatteryClient {
         try {
             connectWithTimeout(socket, deviceId, socketHandle.strategy)
             send(socket, deviceId, "HANDSHAKE", AapBatteryProtocol.handshake)
+            // Preserve the working v0.3.8 ordering for AirPods firmware that
+            // only applies the first registration during session setup. The
+            // response-gated registration below still sends every known mask.
+            AapBatteryProtocol.legacyPreflightNotificationProfiles.forEach { (profile, bytes) ->
+                send(socket, deviceId, "NOTIFICATION_PREFLIGHT_$profile", bytes)
+            }
             BleScanDiagnostics.logAapState(deviceId, "READING", "psm=0x1001")
             readLoop(socket, deviceId, onBattery, onWear, onReady)
         } catch (_: CancellationException) {
@@ -147,9 +157,11 @@ internal class ClassicAapBatteryClient {
         kind: String,
         bytes: ByteArray,
     ) = withContext(Dispatchers.IO) {
-        socket.outputStream.write(bytes)
-        socket.outputStream.flush()
-        BleScanDiagnostics.logAapTx(deviceId, kind, bytes)
+        outputMutex.withLock {
+            socket.outputStream.write(bytes)
+            socket.outputStream.flush()
+            BleScanDiagnostics.logAapTx(deviceId, kind, bytes)
+        }
     }
 
     private suspend fun readLoop(
@@ -162,6 +174,8 @@ internal class ClassicAapBatteryClient {
         val buffer = ByteArray(2048)
         val accumulator = AapFrameAccumulator()
         var startupComplete = false
+        val batteryObserved = AtomicBoolean(false)
+        var batteryRetryJob: Job? = null
         val startupWatchdog = launch {
             delay(STARTUP_RESPONSE_TIMEOUT_MS)
             if (!startupComplete) {
@@ -205,6 +219,19 @@ internal class ClassicAapBatteryClient {
                             }
                             send(socket, deviceId, "KEY_REQUEST", AapBatteryProtocol.keyRequest)
                             startupComplete = true
+                            batteryRetryJob = launch {
+                                delay(BATTERY_REQUEST_RETRY_DELAY_MS)
+                                if (coroutineContext.isActive && !batteryObserved.get()) {
+                                    BleScanDiagnostics.logAapState(
+                                        deviceId,
+                                        "BATTERY_REQUEST_RETRY",
+                                        "no_0x0004_sample",
+                                    )
+                                    AapBatteryProtocol.notificationProfiles.forEach { (profile, bytes) ->
+                                        send(socket, deviceId, "NOTIFICATION_RETRY_$profile", bytes)
+                                    }
+                                }
+                            }
                             onReady()
                         }
                     }
@@ -212,6 +239,8 @@ internal class ClassicAapBatteryClient {
                         BleScanDiagnostics.logAapRxMessage(deviceId, frame)
                         val battery = AapBatteryProtocol.parseBattery(frame)
                         if (battery != null) {
+                            batteryObserved.set(true)
+                            batteryRetryJob?.cancel()
                             BleScanDiagnostics.logAapBattery(deviceId, battery)
                             onBattery(battery)
                         }
@@ -236,6 +265,7 @@ internal class ClassicAapBatteryClient {
             }
         } finally {
             startupWatchdog.cancel()
+            batteryRetryJob?.cancel()
         }
     }
 
@@ -386,6 +416,7 @@ internal class ClassicAapBatteryClient {
     private companion object {
         const val CONNECT_TIMEOUT_MS = 5_000L
         const val STARTUP_RESPONSE_TIMEOUT_MS = 5_000L
+        const val BATTERY_REQUEST_RETRY_DELAY_MS = 2_000L
     }
 }
 

@@ -238,27 +238,37 @@ internal fun mergeParsedState(
         packet.model
     }
 
-    val leftEvidence = when {
-        packet.leftInCase == false && !packet.model.isMax -> ChargingEvidence()
-        packet.leftCharging != null -> chargingEvidence(
-            packet.leftCharging,
+    // Exact AAP values were the working path before the v0.3.9 subscription
+    // change. A later public BLE advertisement is only coarse (10% steps) and
+    // must not downgrade a known exact sample for the same device. Missing
+    // exact components may still be filled from BLE below.
+    val retainExactBattery = sameDevice &&
+        current.batterySource == AirPodsDataStore.BatterySource.AAP_CLASSIC_EXACT.name &&
+        current.hasAnyBattery
+
+    fun keepExactValue(currentValue: Int?, incomingValue: Int?): Int? =
+        if (retainExactBattery && currentValue != null) currentValue else incomingValue
+
+    fun keepExactCharging(
+        currentEvidence: ChargingEvidence,
+        incomingCharging: Boolean?,
+        inCase: Boolean?,
+    ): ChargingEvidence = when {
+        inCase == false && !packet.model.isMax -> ChargingEvidence()
+        retainExactBattery && currentEvidence.isFresh(seenAt) -> currentEvidence
+        incomingCharging != null -> chargingEvidence(
+            incomingCharging,
             "BLE_PUBLIC_COARSE",
             seenAt,
             packet.parserVersion,
         )
-        else -> current.leftChargingEvidence.takeIf { sameDevice } ?: ChargingEvidence()
+        else -> currentEvidence.takeIf { sameDevice } ?: ChargingEvidence()
     }
-    val rightEvidence = when {
-        packet.rightInCase == false && !packet.model.isMax -> ChargingEvidence()
-        packet.rightCharging != null -> chargingEvidence(
-            packet.rightCharging,
-            "BLE_PUBLIC_COARSE",
-            seenAt,
-            packet.parserVersion,
-        )
-        else -> current.rightChargingEvidence.takeIf { sameDevice } ?: ChargingEvidence()
-    }
+
+    val leftEvidence = keepExactCharging(current.leftChargingEvidence, packet.leftCharging, packet.leftInCase)
+    val rightEvidence = keepExactCharging(current.rightChargingEvidence, packet.rightCharging, packet.rightInCase)
     val caseEvidence = when {
+        retainExactBattery && current.caseChargingEvidence.isFresh(seenAt) -> current.caseChargingEvidence
         packet.caseCharging != null -> chargingEvidence(
             packet.caseCharging,
             "BLE_PUBLIC_COARSE",
@@ -275,22 +285,23 @@ internal fun mergeParsedState(
             AirPodsConnectionState.OTHER_DEVICE_OR_CONNECTION_PENDING
         else -> AirPodsConnectionState.NEARBY_ONLY
     }
-    val leftBattery = retainLastKnownPodBattery(
+    val leftBattery = keepExactValue(current.leftBattery, retainLastKnownPodBattery(
         current = current.leftBattery,
         incoming = packet.leftBattery,
         inCase = packet.leftInCase,
         caseOpen = packet.caseOpen,
         sameDevice = sameDevice,
         parserVersion = packet.parserVersion,
-    )
-    val rightBattery = retainLastKnownPodBattery(
+    ))
+    val rightBattery = keepExactValue(current.rightBattery, retainLastKnownPodBattery(
         current = current.rightBattery,
         incoming = packet.rightBattery,
         inCase = packet.rightInCase,
         caseOpen = packet.caseOpen,
         sameDevice = sameDevice,
         parserVersion = packet.parserVersion,
-    )
+    ))
+    val caseBattery = keepExactValue(current.caseBattery, packet.caseBattery)
     val leftClosedCaseZero = isClosedCaseZero(
         incoming = packet.leftBattery,
         inCase = packet.leftInCase,
@@ -317,16 +328,10 @@ internal fun mergeParsedState(
         // packet only contains the other side's status.
         leftBattery = leftBattery,
         rightBattery = rightBattery,
-        caseBattery = packet.caseBattery ?: current.caseBattery.takeIf { sameDevice },
-        leftCharging = packet.leftCharging ?: current.leftCharging.takeIf {
-            sameDevice && leftEvidence.state != ChargingState.UNKNOWN
-        },
-        rightCharging = packet.rightCharging ?: current.rightCharging.takeIf {
-            sameDevice && rightEvidence.state != ChargingState.UNKNOWN
-        },
-        caseCharging = packet.caseCharging ?: current.caseCharging.takeIf {
-            sameDevice && caseEvidence.state != ChargingState.UNKNOWN
-        },
+        caseBattery = caseBattery ?: current.caseBattery.takeIf { sameDevice },
+        leftCharging = leftEvidence.state.toBooleanOrNull(),
+        rightCharging = rightEvidence.state.toBooleanOrNull(),
+        caseCharging = caseEvidence.state.toBooleanOrNull(),
         leftInCase = packet.leftInCase ?: current.leftInCase.takeIf { sameDevice },
         rightInCase = packet.rightInCase ?: current.rightInCase.takeIf { sameDevice },
         caseOpen = packet.caseOpen ?: current.caseOpen.takeIf { sameDevice },
@@ -339,9 +344,11 @@ internal fun mergeParsedState(
         aapReady = current.aapReady.takeIf { sameDevice } ?: false,
         lastSeenAt = seenAt,
         confidence = packet.confidence,
-        batterySource = if (hasFreshBatterySample) AirPodsDataStore.BatterySource.BLE_PUBLIC_COARSE.name
+        batterySource = if (retainExactBattery) current.batterySource
+        else if (hasFreshBatterySample) AirPodsDataStore.BatterySource.BLE_PUBLIC_COARSE.name
         else current.batterySource.takeIf { sameDevice },
-        batteryCapturedAt = if (hasFreshBatterySample) seenAt
+        batteryCapturedAt = if (retainExactBattery) current.batteryCapturedAt
+        else if (hasFreshBatterySample) seenAt
         else current.batteryCapturedAt.takeIf { sameDevice },
         primaryPodIsLeft = packet.primaryPodIsLeft ?: current.primaryPodIsLeft.takeIf { sameDevice },
         wearState = if (wearDetectionEnabled) {
@@ -420,6 +427,12 @@ private fun chargingEvidence(
     expiresAt = capturedAt + CHARGING_TTL_MS,
     proof = proof,
 )
+
+private fun ChargingState.toBooleanOrNull(): Boolean? = when (this) {
+    ChargingState.CHARGING -> true
+    ChargingState.NOT_CHARGING -> false
+    ChargingState.UNKNOWN -> null
+}
 
 private fun AirPodsState.clearChargingIf(clear: Boolean): AirPodsState = if (!clear) {
     this
