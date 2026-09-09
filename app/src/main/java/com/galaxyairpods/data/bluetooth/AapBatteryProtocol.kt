@@ -24,7 +24,10 @@ internal object AapBatteryProtocol {
     val notificationProfiles: List<Pair<String, ByteArray>> = listOf(
         "FF" to byteArrayOf(
             0x04, 0x00, 0x04, 0x00, 0x0F, 0x00,
-            0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(),
+            // FF FF FE FF is the AACP subscribe-all mask.  FF FF FF FF is
+            // accepted by some firmware as a no-op but does not reliably
+            // enable 0x0006 ear-detection notifications on Samsung routes.
+            0xFF.toByte(), 0xFF.toByte(), 0xFE.toByte(), 0xFF.toByte(),
         ),
     )
 

@@ -21,6 +21,13 @@ internal enum class WearMediaAction {
     PLAY,
 }
 
+/** What the controller can prove about the media app at this instant. */
+private enum class MediaPlaybackObservation {
+    PLAYING,
+    NOT_PLAYING,
+    UNKNOWN,
+}
+
 /**
  * Converts stable physical ear-state transitions into media actions.
  *
@@ -97,7 +104,10 @@ internal class WearMediaPlaybackController(
     private var pausedPackageName: String? = null
     private var pausedPositionUpdateTime: Long? = null
     private var pausedWithMediaKeyFallback = false
+    private var pausedWithMediaKeyAtElapsedMs: Long? = null
     private var lastWearEvidenceCapturedAtElapsedMs: Long? = null
+    private var lastTargetRouteAtElapsedMs: Long? = null
+    private var lastMediaWasPlaying = false
 
     suspend fun onWearStateChanged(state: AirPodsState) = actionMutex.withLock {
         if (!state.hasFreshWearEvidence()) {
@@ -124,9 +134,45 @@ internal class WearMediaPlaybackController(
         }
         lastWearEvidenceCapturedAtElapsedMs = capturedAtElapsedMs
         val route = routeGate.check(state)
+        val nowElapsedMs = SystemClock.elapsedRealtime()
+        val routeWasRecentlyActive = lastTargetRouteAtElapsedMs?.let { lastActive ->
+            nowElapsedMs - lastActive in 0..ROUTE_DROP_GRACE_MS
+        } == true
+        if (!route.activeForTarget && !routeWasRecentlyActive) {
+            // A nearby-only advertisement must never advance the media policy.
+            // Keep the policy anchored to an actually active Android route.
+            policy.reset()
+            clearPausedSession()
+            Log.i(
+                TAG,
+                "wear_state ignored state=${state.wearState} reason=ANDROID_ROUTE_UNAVAILABLE",
+            )
+            return@withLock
+        }
         val currentSession = sessionResolver.currentPlaying()
-        val mediaWasPlaying = route.activeForTarget &&
-            (currentSession != null || audioManager?.isMusicActive == true)
+        val mediaPlayingNow = currentSession != null || audioManager?.isMusicActive == true
+        val mediaObservation = mediaPlaybackObservation(currentSession)
+        val mediaWasPlaying = if (route.activeForTarget) {
+            when (mediaObservation) {
+                MediaPlaybackObservation.PLAYING -> true
+                MediaPlaybackObservation.NOT_PLAYING -> false
+                // Without notification access Android does not expose a
+                // session state. An explicit PAUSE key is idempotent, so make
+                // the removal best-effort; resume is still gated by a
+                // confirmed pause below.
+                MediaPlaybackObservation.UNKNOWN -> true
+            }
+        } else {
+            // On Samsung, removing the only active bud can make the output
+            // disappear before the final OUT_OF_EAR frame is delivered. The
+            // route timestamp and the previous playback observation provide a
+            // narrow, target-specific grace window for that removal only.
+            lastMediaWasPlaying || mediaPlayingNow
+        }
+        if (route.activeForTarget) {
+            lastTargetRouteAtElapsedMs = nowElapsedMs
+            lastMediaWasPlaying = mediaPlayingNow
+        }
         val action = policy.onWearStateChanged(
             state = state.wearState,
             mediaWasPlaying = mediaWasPlaying,
@@ -137,11 +183,20 @@ internal class WearMediaPlaybackController(
                 "profile=${route.profileConnected} bluetoothOutput=${route.outputTypeIsBluetooth} " +
                 "addressMatch=${route.outputAddressMatches} nameMatch=${route.outputNameMatches} " +
                 "mediaWasPlaying=$mediaWasPlaying action=$action " +
+                "mediaObservation=$mediaObservation " +
+                "routeGrace=$routeWasRecentlyActive " +
                 "session=${currentSession?.packageName ?: "none"} " +
                 "availability=${sessionResolver.availability()}",
         )
 
-        if (!route.activeForTarget) {
+        val routeAuthorizesAction = route.activeForTarget ||
+            // A profile callback and AudioDeviceInfo update can be a few
+            // hundred milliseconds apart on Samsung. A recent target route
+            // plus current profile proof is enough to let an auto-paused
+            // session resume; a nearby advertisement alone is never enough.
+            (routeWasRecentlyActive &&
+                (route.profileConnected || action == WearMediaAction.PAUSE))
+        if (!routeAuthorizesAction) {
             policy.cancelResume()
             return@withLock
         }
@@ -157,25 +212,48 @@ internal class WearMediaPlaybackController(
         policy.reset()
         clearPausedSession()
         lastWearEvidenceCapturedAtElapsedMs = null
+        lastTargetRouteAtElapsedMs = null
+        lastMediaWasPlaying = false
     }
 
     /**
      * A profile poll can briefly report NEARBY/CONNECTION_PENDING while a
      * single AirPod is still the active Android output.  Do not throw away a
      * pending auto-resume token until the output gate actually proves that the
-     * route is gone.  An explicit DISCONNECTED/UNKNOWN event still calls
-     * [reset] from the monitor service.
+     * route is gone.  The state-clear path below runs after the short grace
+     * window expires.
      */
-    fun onConnectionEvidenceChanged(state: AirPodsState) {
+    suspend fun onConnectionEvidenceChanged(state: AirPodsState) = actionMutex.withLock {
         val route = routeGate.check(state)
+        val nowElapsedMs = SystemClock.elapsedRealtime()
         if (!route.activeForTarget) {
-            reset()
-            Log.i(
-                TAG,
-                "wear_media_connection route=false action_state_cleared=" +
-                    "${state.connectionState}",
-            )
+            val recentlyActive = lastTargetRouteAtElapsedMs?.let { lastActive ->
+                nowElapsedMs - lastActive in 0..ROUTE_DROP_GRACE_MS
+            } == true
+            if (recentlyActive) {
+                // Keep the policy alive for the final one-bud wear frame.
+                Log.i(
+                    TAG,
+                    "wear_media_connection route=false action_state=grace " +
+                        "connectionState=${state.connectionState}",
+                )
+            } else if (state.connectionState == com.galaxyairpods.domain.model.AirPodsConnectionState.ANDROID_CONNECTED &&
+                lastTargetRouteAtElapsedMs == null
+            ) {
+                // The profile callback can arrive before AudioDeviceInfo is
+                // updated on service start. Wait for the next route poll,
+                // but do not keep an already-expired route alive forever.
+                Log.d(TAG, "wear_media_connection route=pending_profile_output")
+            } else {
+                reset()
+                Log.i(
+                    TAG,
+                    "wear_media_connection route=false action_state=cleared " +
+                        "connectionState=${state.connectionState}",
+                )
+            }
         } else {
+            lastTargetRouteAtElapsedMs = nowElapsedMs
             Log.d(
                 TAG,
                 "wear_media_connection route=true action_state_retained=" +
@@ -193,8 +271,9 @@ internal class WearMediaPlaybackController(
             // once instead of silently losing the resume transition.
             val dispatched = dispatch(KeyEvent.KEYCODE_MEDIA_PAUSE)
             val verified = dispatched && waitForGlobalNotPlaying()
-            if (dispatched) {
+            if (verified) {
                 pausedWithMediaKeyFallback = true
+                pausedWithMediaKeyAtElapsedMs = SystemClock.elapsedRealtime()
                 Log.i(
                     TAG,
                     "wear_media_action action=PAUSE path=MEDIA_KEY " +
@@ -261,11 +340,17 @@ internal class WearMediaPlaybackController(
 
             // If another session is already playing, the user or another app
             // has taken over the route. Never toggle it with a global key.
-            if (sessionResolver.currentPlaying() != null || audioManager?.isMusicActive == true) {
+            val fallbackPauseAge = pausedWithMediaKeyAtElapsedMs?.let {
+                SystemClock.elapsedRealtime() - it
+            }
+            if (sessionResolver.currentPlaying() != null ||
+                (audioManager?.isMusicActive == true &&
+                    fallbackPauseAge != null && fallbackPauseAge > MEDIA_KEY_RESUME_GRACE_MS)
+            ) {
                 Log.i(
                     TAG,
                     "wear_media_action action=PLAY path=BLOCKED verified=false " +
-                        "reason=USER_OR_OTHER_SESSION_PLAYING",
+                        "reason=OTHER_SESSION_PLAYING",
                 )
                 clearPausedSession()
                 return
@@ -361,6 +446,17 @@ internal class WearMediaPlaybackController(
         pausedPackageName = null
         pausedPositionUpdateTime = null
         pausedWithMediaKeyFallback = false
+        pausedWithMediaKeyAtElapsedMs = null
+    }
+
+    private fun mediaPlaybackObservation(
+        currentSession: MediaController?,
+    ): MediaPlaybackObservation = when {
+        currentSession != null || audioManager?.isMusicActive == true ->
+            MediaPlaybackObservation.PLAYING
+        sessionResolver.availability() == MediaSessionAvailability.AVAILABLE ->
+            MediaPlaybackObservation.NOT_PLAYING
+        else -> MediaPlaybackObservation.UNKNOWN
     }
 
     private fun AirPodsState.hasFreshWearEvidence(): Boolean {
@@ -391,5 +487,7 @@ internal class WearMediaPlaybackController(
     private companion object {
         const val TAG = "AirPodsWearMedia"
         const val MAX_WEAR_EVIDENCE_GAP_MS = 15_000L
+        const val ROUTE_DROP_GRACE_MS = 3_000L
+        const val MEDIA_KEY_RESUME_GRACE_MS = 3_000L
     }
 }

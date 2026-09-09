@@ -239,6 +239,40 @@ class PerDeviceWearStabilizerTest {
         )
     }
 
+    @Test
+    fun partialAapAndSideSpecificBleAgreeOnOneBudInsteadOfConflict() {
+        var now = 7_000L
+        val stabilizer = PerDeviceWearStabilizer(
+            requiredFrames = 1,
+            requiredFramesForSource = { 1 },
+            clock = { now },
+        )
+
+        assertEquals(
+            AirPodsWearState.LEFT_IN_EAR,
+            stabilizer.accept(
+                candidate(
+                    device = "device-a",
+                    capturedAt = now,
+                    source = WearEventSource.BLE_PUBLIC,
+                    state = AirPodsWearState.LEFT_IN_EAR,
+                ),
+            )?.state,
+        )
+        now = 7_100L
+        assertEquals(
+            AirPodsWearState.PARTIAL_IN_EAR,
+            stabilizer.accept(
+                candidate(
+                    device = "device-a",
+                    capturedAt = now,
+                    source = WearEventSource.AAP_CLASSIC,
+                    state = AirPodsWearState.PARTIAL_IN_EAR,
+                ),
+            )?.state,
+        )
+    }
+
     private fun candidate(
         device: String,
         capturedAt: Long,

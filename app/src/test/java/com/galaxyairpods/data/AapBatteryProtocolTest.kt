@@ -63,6 +63,12 @@ class AapBatteryProtocolTest {
         assertEquals(0x01, AapBatteryProtocol.handshake[4].toInt())
         assertEquals(1, AapBatteryProtocol.notificationProfiles.size)
         assertTrue(AapBatteryProtocol.notificationProfiles.all { it.second.size == 10 })
+        assertEquals(
+            listOf(0xFF, 0xFF, 0xFE, 0xFF),
+            AapBatteryProtocol.notificationProfiles.single().second
+                .takeLast(4)
+                .map { it.toInt() and 0xFF },
+        )
     }
 
     @Test

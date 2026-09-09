@@ -70,6 +70,7 @@ class AirPodsMonitorService : Service() {
         observeClassicAapBattery()
         observeClassicAapWear()
         observeBluetoothConnections()
+        observeMediaRoute()
         observePersistedBatteryFallback()
         observeWearSettings()
         startAutomaticUpdateChecks()
@@ -153,19 +154,12 @@ class AirPodsMonitorService : Service() {
                 val previous = repository.state.value
                 repository.applyBluetoothConnection(event)
                 val current = repository.state.value
-                when (event.connectionState) {
-                    com.galaxyairpods.domain.model.AirPodsConnectionState.DISCONNECTED,
-                    com.galaxyairpods.domain.model.AirPodsConnectionState.UNKNOWN,
-                    -> mediaPlaybackController.reset()
-                    com.galaxyairpods.domain.model.AirPodsConnectionState.ANDROID_CONNECTED -> Unit
-                    else -> {
-                        // NEARBY_ONLY/CONNECTION_PENDING can be a transient
-                        // Samsung profile-poll result while a single bud is
-                        // still the active output. Let the route gate decide
-                        // whether the saved auto-pause session is still safe.
-                        mediaPlaybackController.onConnectionEvidenceChanged(current)
-                    }
-                }
+                // A one-bud removal can produce a profile-disconnect callback
+                // before the final ear-state advertisement. The controller
+                // applies a short route grace window and still clears stale
+                // state once that window expires; nearby advertisements alone
+                // never authorize media control.
+                mediaPlaybackController.onConnectionEvidenceChanged(current)
                 val override = dataStore.modelOverride.first()
                 val displayState = current.copy(model = override ?: current.model)
 
@@ -250,6 +244,17 @@ class AirPodsMonitorService : Service() {
             dataStore.automaticMediaControlEnabled.collect { enabled ->
                 automaticMediaControlEnabled = enabled
                 if (!enabled) mediaPlaybackController.reset()
+            }
+        }
+    }
+
+    private fun observeMediaRoute() {
+        serviceScope.launch {
+            while (isActive) {
+                if (wearDetectionEnabled && automaticMediaControlEnabled) {
+                    mediaPlaybackController.onConnectionEvidenceChanged(repository.state.value)
+                }
+                delay(MEDIA_ROUTE_POLL_MS)
             }
         }
     }
@@ -381,5 +386,6 @@ class AirPodsMonitorService : Service() {
         const val CHANNEL_ID = "airpods_detection"
         const val NOTIFICATION_ID = 1001
         const val AUTO_UPDATE_INTERVAL_MS = 30 * 60 * 1000L
+        const val MEDIA_ROUTE_POLL_MS = 1_000L
     }
 }

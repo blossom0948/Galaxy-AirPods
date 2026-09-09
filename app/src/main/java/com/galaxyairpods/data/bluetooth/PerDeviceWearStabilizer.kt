@@ -182,7 +182,15 @@ internal class PerDeviceWearStabilizer(
             }
             .firstOrNull()
         val resolvedState = if (other != null && other.state != validated.state) {
-            AirPodsWearState.CONFLICT
+            // PARTIAL_IN_EAR intentionally omits the physical side. A
+            // side-specific frame from the other transport is compatible
+            // evidence, not a contradiction, when both say exactly one bud
+            // is in an ear.
+            if (isWearConflict(other.state, validated.state)) {
+                AirPodsWearState.CONFLICT
+            } else {
+                validated.state
+            }
         } else {
             validated.state
         }
@@ -195,5 +203,25 @@ internal class PerDeviceWearStabilizer(
         )
         stable[key] = result.copy(state = validated.state)
         return result
+    }
+
+    private fun isWearConflict(
+        first: AirPodsWearState,
+        second: AirPodsWearState,
+    ): Boolean {
+        if (first == second) return false
+        val compatiblePartial =
+            (first == AirPodsWearState.PARTIAL_IN_EAR &&
+                second in SIDE_SPECIFIC_ONE_EAR_STATES) ||
+                (second == AirPodsWearState.PARTIAL_IN_EAR &&
+                    first in SIDE_SPECIFIC_ONE_EAR_STATES)
+        return !compatiblePartial
+    }
+
+    private companion object {
+        val SIDE_SPECIFIC_ONE_EAR_STATES = setOf(
+            AirPodsWearState.LEFT_IN_EAR,
+            AirPodsWearState.RIGHT_IN_EAR,
+        )
     }
 }

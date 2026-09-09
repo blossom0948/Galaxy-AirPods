@@ -135,6 +135,29 @@ class WearPlaybackPolicyTest {
     }
 
     @Test
+    fun removingTheOnlyLeftOrRightBudPausesAndReinsertingThatSameBudPlays() {
+        listOf(
+            AirPodsWearState.LEFT_IN_EAR,
+            AirPodsWearState.RIGHT_IN_EAR,
+        ).forEach { oneBudInEar ->
+            val policy = WearPlaybackPolicy()
+
+            assertEquals(
+                WearMediaAction.NONE,
+                policy.onWearStateChanged(oneBudInEar, mediaWasPlaying = true),
+            )
+            assertEquals(
+                WearMediaAction.PAUSE,
+                policy.onWearStateChanged(AirPodsWearState.IN_CASE, mediaWasPlaying = true),
+            )
+            assertEquals(
+                WearMediaAction.PLAY,
+                policy.onWearStateChanged(oneBudInEar, mediaWasPlaying = false),
+            )
+        }
+    }
+
+    @Test
     fun conflictAndUnknownNeverAdvanceTheWearTransition() {
         val policy = WearPlaybackPolicy()
 

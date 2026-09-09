@@ -69,7 +69,7 @@ internal class MediaSessionResolver(
         val mediaKeyController = listener.mediaKeyEventSessionToken()?.let { token ->
             controllers.firstOrNull { it.sessionToken == token }
         }
-        if (mediaKeyController?.playbackState?.state == PlaybackState.STATE_PLAYING) {
+        if (mediaKeyController?.playbackState?.state?.isActivePlaybackState() == true) {
             return mediaKeyController
         }
         val selected = selectBestPlayingSession(
@@ -86,7 +86,7 @@ internal class MediaSessionResolver(
         ) ?: return null
         return controllers.firstOrNull {
             it.packageName == selected.packageName &&
-                it.playbackState?.state == PlaybackState.STATE_PLAYING &&
+                it.playbackState?.state?.isActivePlaybackState() == true &&
                 it.playbackState?.lastPositionUpdateTime == selected.lastPositionUpdateTime
         }
     }
