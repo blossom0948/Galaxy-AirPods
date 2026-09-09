@@ -56,6 +56,12 @@ class AirPodsDataStore(private val context: Context) {
         val confidence = stringPreferencesKey("confidence")
         val batterySource = stringPreferencesKey("battery_source")
         val batteryUpdatedAt = longPreferencesKey("battery_updated_at")
+        val leftBatterySource = stringPreferencesKey("left_battery_source")
+        val rightBatterySource = stringPreferencesKey("right_battery_source")
+        val caseBatterySource = stringPreferencesKey("case_battery_source")
+        val leftBatteryCapturedAt = longPreferencesKey("left_battery_captured_at")
+        val rightBatteryCapturedAt = longPreferencesKey("right_battery_captured_at")
+        val caseBatteryCapturedAt = longPreferencesKey("case_battery_captured_at")
         val primaryPodIsLeft = booleanPreferencesKey("primary_pod_is_left")
         val leftChargingState = stringPreferencesKey("left_charging_state")
         val rightChargingState = stringPreferencesKey("right_charging_state")
@@ -97,6 +103,11 @@ class AirPodsDataStore(private val context: Context) {
                 val liveInThisProcess = preferences[Keys.liveSessionId] == PROCESS_SESSION_ID &&
                     lastSeenAt != null &&
                     System.currentTimeMillis() - lastSeenAt in 0..LIVE_STATE_TTL_MS
+                val storedLeftBattery = preferences[Keys.leftBattery]
+                val storedRightBattery = preferences[Keys.rightBattery]
+                val storedCaseBattery = preferences[Keys.caseBattery]
+                val storedBatterySource = preferences[Keys.batterySource]
+                val storedBatteryCapturedAt = preferences[Keys.batteryUpdatedAt]
                 AirPodsState(
                     // Transport addresses are ephemeral identifiers and may be
                     // rotating BLE private addresses. Never restore or expose
@@ -106,9 +117,9 @@ class AirPodsDataStore(private val context: Context) {
                     model = preferences[Keys.model]?.let { value ->
                         AirPodsModel.entries.firstOrNull { it.name == value }
                     } ?: AirPodsModel.UNKNOWN,
-                    leftBattery = preferences[Keys.leftBattery],
-                    rightBattery = preferences[Keys.rightBattery],
-                    caseBattery = preferences[Keys.caseBattery],
+                    leftBattery = storedLeftBattery,
+                    rightBattery = storedRightBattery,
+                    caseBattery = storedCaseBattery,
                     leftCharging = preferences[Keys.leftCharging],
                     rightCharging = preferences[Keys.rightCharging],
                     caseCharging = preferences[Keys.caseCharging],
@@ -135,8 +146,25 @@ class AirPodsDataStore(private val context: Context) {
                     confidence = preferences[Keys.confidence]?.let { value ->
                         DataConfidence.entries.firstOrNull { it.name == value }
                     } ?: DataConfidence.UNKNOWN,
-                    batterySource = preferences[Keys.batterySource],
-                    batteryCapturedAt = preferences[Keys.batteryUpdatedAt],
+                    batterySource = storedBatterySource,
+                    batteryCapturedAt = storedBatteryCapturedAt,
+                    // Older releases stored only one source for all three
+                    // values. An old AAP global flag is safe for L/R, but it
+                    // could have frozen a coarse/inherited case value. Treat
+                    // that legacy case provenance as coarse until a frame
+                    // explicitly carries a case reading.
+                    leftBatterySource = preferences[Keys.leftBatterySource]
+                        ?: storedBatterySource.takeIf { storedLeftBattery != null },
+                    rightBatterySource = preferences[Keys.rightBatterySource]
+                        ?: storedBatterySource.takeIf { storedRightBattery != null },
+                    caseBatterySource = preferences[Keys.caseBatterySource]
+                        ?: legacyCaseBatterySource(storedBatterySource, storedCaseBattery),
+                    leftBatteryCapturedAt = preferences[Keys.leftBatteryCapturedAt]
+                        ?: storedBatteryCapturedAt.takeIf { storedLeftBattery != null },
+                    rightBatteryCapturedAt = preferences[Keys.rightBatteryCapturedAt]
+                        ?: storedBatteryCapturedAt.takeIf { storedRightBattery != null },
+                    caseBatteryCapturedAt = preferences[Keys.caseBatteryCapturedAt]
+                        ?: storedBatteryCapturedAt.takeIf { storedCaseBattery != null },
                     primaryPodIsLeft = preferences[Keys.primaryPodIsLeft],
                     // Charging is a live transport observation, not a
                     // battery fallback. Do not resurrect a previous true
@@ -253,6 +281,24 @@ class AirPodsDataStore(private val context: Context) {
             preferences.putNullablePreserving(Keys.leftBattery, state.leftBattery, preserveKnownFields)
             preferences.putNullablePreserving(Keys.rightBattery, state.rightBattery, preserveKnownFields)
             preferences.putNullablePreserving(Keys.caseBattery, state.caseBattery, preserveKnownFields)
+            preferences.putNullablePreserving(Keys.leftBatterySource, state.leftBatterySource, preserveKnownFields)
+            preferences.putNullablePreserving(Keys.rightBatterySource, state.rightBatterySource, preserveKnownFields)
+            preferences.putNullablePreserving(Keys.caseBatterySource, state.caseBatterySource, preserveKnownFields)
+            preferences.putNullablePreserving(
+                Keys.leftBatteryCapturedAt,
+                state.leftBatteryCapturedAt,
+                preserveKnownFields,
+            )
+            preferences.putNullablePreserving(
+                Keys.rightBatteryCapturedAt,
+                state.rightBatteryCapturedAt,
+                preserveKnownFields,
+            )
+            preferences.putNullablePreserving(
+                Keys.caseBatteryCapturedAt,
+                state.caseBatteryCapturedAt,
+                preserveKnownFields,
+            )
             preferences.putNullablePreserving(Keys.leftCharging, state.leftCharging, preserveKnownFields)
             preferences.putNullablePreserving(Keys.rightCharging, state.rightCharging, preserveKnownFields)
             preferences.putNullablePreserving(Keys.caseCharging, state.caseCharging, preserveKnownFields)
@@ -273,9 +319,18 @@ class AirPodsDataStore(private val context: Context) {
             preferences.putNullable(Keys.primaryPodIsLeft, state.primaryPodIsLeft)
             if (state.hasAnyBattery) {
                 val source = batterySource?.name ?: state.batterySource
+                    ?: state.leftBatterySource
+                    ?: state.rightBatterySource
+                    ?: state.caseBatterySource
+                val capturedAt = state.batteryCapturedAt
+                    ?: maxOf(
+                        state.leftBatteryCapturedAt ?: 0L,
+                        state.rightBatteryCapturedAt ?: 0L,
+                        state.caseBatteryCapturedAt ?: 0L,
+                    ).takeIf { it > 0L }
                 if (source != null) {
                     preferences[Keys.batterySource] = source
-                    preferences[Keys.batteryUpdatedAt] = state.batteryCapturedAt
+                    preferences[Keys.batteryUpdatedAt] = capturedAt
                         ?: state.lastSeenAt
                         ?: System.currentTimeMillis()
                 } else {
@@ -287,6 +342,12 @@ class AirPodsDataStore(private val context: Context) {
             } else {
                 preferences.remove(Keys.batterySource)
                 preferences.remove(Keys.batteryUpdatedAt)
+                preferences.remove(Keys.leftBatterySource)
+                preferences.remove(Keys.rightBatterySource)
+                preferences.remove(Keys.caseBatterySource)
+                preferences.remove(Keys.leftBatteryCapturedAt)
+                preferences.remove(Keys.rightBatteryCapturedAt)
+                preferences.remove(Keys.caseBatteryCapturedAt)
             }
 
             writeChargingEvidence(
@@ -425,4 +486,14 @@ private fun <T> MutablePreferences.putNullablePreserving(
     preserveExisting: Boolean,
 ) {
     if (value != null || !preserveExisting) putNullable(key, value)
+}
+
+private fun legacyCaseBatterySource(
+    storedSource: String?,
+    storedCaseBattery: Int?,
+): String? = when {
+    storedCaseBattery == null -> null
+    storedSource == AirPodsDataStore.BatterySource.AAP_CLASSIC_EXACT.name ->
+        AirPodsDataStore.BatterySource.BLE_PUBLIC_COARSE.name
+    else -> storedSource
 }

@@ -164,6 +164,13 @@ data class AirPodsState(
     val confidence: DataConfidence = DataConfidence.UNKNOWN,
     val batterySource: String? = null,
     val batteryCapturedAt: Long? = null,
+    /** Battery provenance is tracked per component; a single AAP frame may omit the case. */
+    val leftBatterySource: String? = null,
+    val rightBatterySource: String? = null,
+    val caseBatterySource: String? = null,
+    val leftBatteryCapturedAt: Long? = null,
+    val rightBatteryCapturedAt: Long? = null,
+    val caseBatteryCapturedAt: Long? = null,
     val primaryPodIsLeft: Boolean? = null,
     val leftChargingEvidence: ChargingEvidence = ChargingEvidence(),
     val rightChargingEvidence: ChargingEvidence = ChargingEvidence(),
@@ -349,6 +356,12 @@ fun AirPodsState.mergeKnownValuesFrom(fallback: AirPodsState?): AirPodsState {
         batterySource = batterySource ?: fallback.batterySource,
         batteryCapturedAt = maxOf(batteryCapturedAt ?: 0L, fallback.batteryCapturedAt ?: 0L)
             .takeIf { it > 0L },
+        leftBatterySource = leftBatterySource ?: fallback.leftBatterySource,
+        rightBatterySource = rightBatterySource ?: fallback.rightBatterySource,
+        caseBatterySource = caseBatterySource ?: fallback.caseBatterySource,
+        leftBatteryCapturedAt = leftBatteryCapturedAt ?: fallback.leftBatteryCapturedAt,
+        rightBatteryCapturedAt = rightBatteryCapturedAt ?: fallback.rightBatteryCapturedAt,
+        caseBatteryCapturedAt = caseBatteryCapturedAt ?: fallback.caseBatteryCapturedAt,
         primaryPodIsLeft = primaryPodIsLeft ?: fallback.primaryPodIsLeft,
         leftChargingEvidence = leftChargingEvidence.takeIf { it.state != ChargingState.UNKNOWN }
             ?: fallback.leftChargingEvidence,

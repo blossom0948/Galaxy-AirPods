@@ -160,6 +160,18 @@ class BleAirPodsRepository(
             leftBattery = snapshot.left?.percent ?: base.leftBattery,
             rightBattery = snapshot.right?.percent ?: base.rightBattery,
             caseBattery = snapshot.case?.percent ?: base.caseBattery,
+            leftBatterySource = snapshot.left?.let {
+                AirPodsDataStore.BatterySource.AAP_CLASSIC_EXACT.name
+            } ?: base.leftBatterySource,
+            rightBatterySource = snapshot.right?.let {
+                AirPodsDataStore.BatterySource.AAP_CLASSIC_EXACT.name
+            } ?: base.rightBatterySource,
+            caseBatterySource = snapshot.case?.let {
+                AirPodsDataStore.BatterySource.AAP_CLASSIC_EXACT.name
+            } ?: base.caseBatterySource,
+            leftBatteryCapturedAt = snapshot.left?.let { event.seenAt } ?: base.leftBatteryCapturedAt,
+            rightBatteryCapturedAt = snapshot.right?.let { event.seenAt } ?: base.rightBatteryCapturedAt,
+            caseBatteryCapturedAt = snapshot.case?.let { event.seenAt } ?: base.caseBatteryCapturedAt,
             leftCharging = snapshot.left?.charging ?: base.leftCharging,
             rightCharging = snapshot.right?.charging ?: base.rightCharging,
             caseCharging = snapshot.case?.charging ?: base.caseCharging,
@@ -238,24 +250,16 @@ internal fun mergeParsedState(
         packet.model
     }
 
-    // Exact AAP values were the working path before the v0.3.9 subscription
-    // change. A later public BLE advertisement is only coarse (10% steps) and
-    // must not downgrade a known exact sample for the same device. Missing
-    // exact components may still be filled from BLE below.
-    val retainExactBattery = sameDevice &&
-        current.batterySource == AirPodsDataStore.BatterySource.AAP_CLASSIC_EXACT.name &&
-        current.hasAnyBattery
-
-    fun keepExactValue(currentValue: Int?, incomingValue: Int?): Int? =
-        if (retainExactBattery && currentValue != null) currentValue else incomingValue
-
     fun keepExactCharging(
         currentEvidence: ChargingEvidence,
         incomingCharging: Boolean?,
         inCase: Boolean?,
+        currentBatterySource: String?,
     ): ChargingEvidence = when {
         inCase == false && !packet.model.isMax -> ChargingEvidence()
-        retainExactBattery && currentEvidence.isFresh(seenAt) -> currentEvidence
+        sameDevice && currentBatterySource == AirPodsDataStore.BatterySource.AAP_CLASSIC_EXACT.name &&
+            currentEvidence.source == AirPodsDataStore.BatterySource.AAP_CLASSIC_EXACT.name &&
+            currentEvidence.isFresh(seenAt) -> currentEvidence
         incomingCharging != null -> chargingEvidence(
             incomingCharging,
             "BLE_PUBLIC_COARSE",
@@ -265,10 +269,23 @@ internal fun mergeParsedState(
         else -> currentEvidence.takeIf { sameDevice } ?: ChargingEvidence()
     }
 
-    val leftEvidence = keepExactCharging(current.leftChargingEvidence, packet.leftCharging, packet.leftInCase)
-    val rightEvidence = keepExactCharging(current.rightChargingEvidence, packet.rightCharging, packet.rightInCase)
+    val leftEvidence = keepExactCharging(
+        current.leftChargingEvidence,
+        packet.leftCharging,
+        packet.leftInCase,
+        current.leftBatterySource,
+    )
+    val rightEvidence = keepExactCharging(
+        current.rightChargingEvidence,
+        packet.rightCharging,
+        packet.rightInCase,
+        current.rightBatterySource,
+    )
     val caseEvidence = when {
-        retainExactBattery && current.caseChargingEvidence.isFresh(seenAt) -> current.caseChargingEvidence
+        sameDevice && current.caseBatterySource == AirPodsDataStore.BatterySource.AAP_CLASSIC_EXACT.name &&
+            current.caseChargingEvidence.source ==
+            AirPodsDataStore.BatterySource.AAP_CLASSIC_EXACT.name &&
+            current.caseChargingEvidence.isFresh(seenAt) -> current.caseChargingEvidence
         packet.caseCharging != null -> chargingEvidence(
             packet.caseCharging,
             "BLE_PUBLIC_COARSE",
@@ -285,23 +302,25 @@ internal fun mergeParsedState(
             AirPodsConnectionState.OTHER_DEVICE_OR_CONNECTION_PENDING
         else -> AirPodsConnectionState.NEARBY_ONLY
     }
-    val leftBattery = keepExactValue(current.leftBattery, retainLastKnownPodBattery(
-        current = current.leftBattery,
-        incoming = packet.leftBattery,
-        inCase = packet.leftInCase,
-        caseOpen = packet.caseOpen,
-        sameDevice = sameDevice,
-        parserVersion = packet.parserVersion,
-    ))
-    val rightBattery = keepExactValue(current.rightBattery, retainLastKnownPodBattery(
-        current = current.rightBattery,
-        incoming = packet.rightBattery,
-        inCase = packet.rightInCase,
-        caseOpen = packet.caseOpen,
-        sameDevice = sameDevice,
-        parserVersion = packet.parserVersion,
-    ))
-    val caseBattery = keepExactValue(current.caseBattery, packet.caseBattery)
+    // Battery provenance is component-specific. AAP notifications commonly
+    // contain L/R but omit the case, so a global exact flag would incorrectly
+    // freeze an older coarse case value forever.
+    fun isExactAapBattery(source: String?, value: Int?): Boolean = sameDevice &&
+        value != null && source == AirPodsDataStore.BatterySource.AAP_CLASSIC_EXACT.name
+
+    // Compatibility for an in-memory state created by an older process: keep
+    // its exact L/R values, but require explicit per-case provenance so the
+    // known inherited/coarse case value can be refreshed.
+    val exactLeftBattery = isExactAapBattery(current.leftBatterySource, current.leftBattery) ||
+        (sameDevice && current.leftBatterySource == null &&
+            current.batterySource == AirPodsDataStore.BatterySource.AAP_CLASSIC_EXACT.name &&
+            current.leftBattery != null)
+    val exactRightBattery = isExactAapBattery(current.rightBatterySource, current.rightBattery) ||
+        (sameDevice && current.rightBatterySource == null &&
+            current.batterySource == AirPodsDataStore.BatterySource.AAP_CLASSIC_EXACT.name &&
+            current.rightBattery != null)
+    val exactCaseBattery = isExactAapBattery(current.caseBatterySource, current.caseBattery)
+
     val leftClosedCaseZero = isClosedCaseZero(
         incoming = packet.leftBattery,
         inCase = packet.leftInCase,
@@ -314,10 +333,81 @@ internal fun mergeParsedState(
         caseOpen = packet.caseOpen,
         parserVersion = packet.parserVersion,
     )
-    val hasFreshBatterySample =
-        (packet.leftBattery != null && !leftClosedCaseZero) ||
-            (packet.rightBattery != null && !rightClosedCaseZero) ||
-            packet.caseBattery != null
+    val incomingLeftBattery = retainLastKnownPodBattery(
+        current = current.leftBattery,
+        incoming = packet.leftBattery,
+        inCase = packet.leftInCase,
+        caseOpen = packet.caseOpen,
+        sameDevice = sameDevice,
+        parserVersion = packet.parserVersion,
+    )
+    val incomingRightBattery = retainLastKnownPodBattery(
+        current = current.rightBattery,
+        incoming = packet.rightBattery,
+        inCase = packet.rightInCase,
+        caseOpen = packet.caseOpen,
+        sameDevice = sameDevice,
+        parserVersion = packet.parserVersion,
+    )
+    val leftBattery = if (exactLeftBattery) current.leftBattery else incomingLeftBattery
+    val rightBattery = if (exactRightBattery) current.rightBattery else incomingRightBattery
+    val caseBattery = if (exactCaseBattery) current.caseBattery else {
+        packet.caseBattery ?: current.caseBattery.takeIf { sameDevice }
+    }
+    val freshLeftBattery = packet.leftBattery != null && !leftClosedCaseZero && !exactLeftBattery
+    val freshRightBattery = packet.rightBattery != null && !rightClosedCaseZero && !exactRightBattery
+    val freshCaseBattery = packet.caseBattery != null && !exactCaseBattery
+    val hasFreshBatterySample = freshLeftBattery || freshRightBattery || freshCaseBattery
+    val leftBatterySource = when {
+        exactLeftBattery -> current.leftBatterySource
+            ?: AirPodsDataStore.BatterySource.AAP_CLASSIC_EXACT.name
+        freshLeftBattery -> AirPodsDataStore.BatterySource.BLE_PUBLIC_COARSE.name
+        sameDevice -> current.leftBatterySource
+        else -> null
+    }
+    val rightBatterySource = when {
+        exactRightBattery -> current.rightBatterySource
+            ?: AirPodsDataStore.BatterySource.AAP_CLASSIC_EXACT.name
+        freshRightBattery -> AirPodsDataStore.BatterySource.BLE_PUBLIC_COARSE.name
+        sameDevice -> current.rightBatterySource
+        else -> null
+    }
+    val caseBatterySource = when {
+        exactCaseBattery -> current.caseBatterySource
+        freshCaseBattery -> AirPodsDataStore.BatterySource.BLE_PUBLIC_COARSE.name
+        sameDevice -> current.caseBatterySource
+        else -> null
+    }
+    val leftBatteryCapturedAt = when {
+        freshLeftBattery -> seenAt
+        sameDevice -> current.leftBatteryCapturedAt
+            ?: current.batteryCapturedAt.takeIf { current.leftBattery != null }
+        else -> null
+    }
+    val rightBatteryCapturedAt = when {
+        freshRightBattery -> seenAt
+        sameDevice -> current.rightBatteryCapturedAt
+            ?: current.batteryCapturedAt.takeIf { current.rightBattery != null }
+        else -> null
+    }
+    val caseBatteryCapturedAt = when {
+        freshCaseBattery -> seenAt
+        sameDevice -> current.caseBatteryCapturedAt
+            ?: current.batteryCapturedAt.takeIf { current.caseBattery != null }
+        else -> null
+    }
+    val hasExactAapBattery = listOf(
+        leftBatterySource to leftBattery,
+        rightBatterySource to rightBattery,
+        caseBatterySource to caseBattery,
+    ).any { (source, value) ->
+        source == AirPodsDataStore.BatterySource.AAP_CLASSIC_EXACT.name && value != null
+    }
+    val latestBatteryCapturedAt = listOfNotNull(
+        leftBatteryCapturedAt,
+        rightBatteryCapturedAt,
+        caseBatteryCapturedAt,
+    ).maxOrNull()
 
     return AirPodsState(
         deviceId = if (sameDevice) current.deviceId ?: deviceId else deviceId,
@@ -328,7 +418,13 @@ internal fun mergeParsedState(
         // packet only contains the other side's status.
         leftBattery = leftBattery,
         rightBattery = rightBattery,
-        caseBattery = caseBattery ?: current.caseBattery.takeIf { sameDevice },
+        caseBattery = caseBattery,
+        leftBatterySource = leftBatterySource,
+        rightBatterySource = rightBatterySource,
+        caseBatterySource = caseBatterySource,
+        leftBatteryCapturedAt = leftBatteryCapturedAt,
+        rightBatteryCapturedAt = rightBatteryCapturedAt,
+        caseBatteryCapturedAt = caseBatteryCapturedAt,
         leftCharging = leftEvidence.state.toBooleanOrNull(),
         rightCharging = rightEvidence.state.toBooleanOrNull(),
         caseCharging = caseEvidence.state.toBooleanOrNull(),
@@ -344,12 +440,14 @@ internal fun mergeParsedState(
         aapReady = current.aapReady.takeIf { sameDevice } ?: false,
         lastSeenAt = seenAt,
         confidence = packet.confidence,
-        batterySource = if (retainExactBattery) current.batterySource
-        else if (hasFreshBatterySample) AirPodsDataStore.BatterySource.BLE_PUBLIC_COARSE.name
-        else current.batterySource.takeIf { sameDevice },
-        batteryCapturedAt = if (retainExactBattery) current.batteryCapturedAt
-        else if (hasFreshBatterySample) seenAt
-        else current.batteryCapturedAt.takeIf { sameDevice },
+        batterySource = when {
+            hasExactAapBattery -> AirPodsDataStore.BatterySource.AAP_CLASSIC_EXACT.name
+            hasFreshBatterySample -> AirPodsDataStore.BatterySource.BLE_PUBLIC_COARSE.name
+            sameDevice -> current.batterySource
+            else -> null
+        },
+        batteryCapturedAt = latestBatteryCapturedAt
+            ?: current.batteryCapturedAt.takeIf { sameDevice },
         primaryPodIsLeft = packet.primaryPodIsLeft ?: current.primaryPodIsLeft.takeIf { sameDevice },
         wearState = if (wearDetectionEnabled) {
             packet.wearState ?: current.wearState.takeIf { sameDevice }

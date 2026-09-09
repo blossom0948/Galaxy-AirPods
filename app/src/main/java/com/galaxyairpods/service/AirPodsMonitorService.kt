@@ -386,6 +386,9 @@ class AirPodsMonitorService : Service() {
         const val CHANNEL_ID = "airpods_detection"
         const val NOTIFICATION_ID = 1001
         const val AUTO_UPDATE_INTERVAL_MS = 30 * 60 * 1000L
-        const val MEDIA_ROUTE_POLL_MS = 1_000L
+        // Media/wear transitions are event-driven; this poll only repairs a
+        // missed platform callback. Two seconds keeps the watchdog without a
+        // permanent 1 Hz wake-up while preserving the same control path.
+        const val MEDIA_ROUTE_POLL_MS = 2_000L
     }
 }

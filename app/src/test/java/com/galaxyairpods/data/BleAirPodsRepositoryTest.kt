@@ -256,6 +256,12 @@ class BleAirPodsRepositoryTest {
             caseBattery = 44,
             batterySource = "AAP_CLASSIC_EXACT",
             batteryCapturedAt = 900L,
+            leftBatterySource = "AAP_CLASSIC_EXACT",
+            rightBatterySource = "AAP_CLASSIC_EXACT",
+            caseBatterySource = "AAP_CLASSIC_EXACT",
+            leftBatteryCapturedAt = 900L,
+            rightBatteryCapturedAt = 900L,
+            caseBatteryCapturedAt = 900L,
             detected = true,
             connectionState = AirPodsConnectionState.ANDROID_CONNECTED,
         )
@@ -281,5 +287,52 @@ class BleAirPodsRepositoryTest {
         assertEquals(44, merged.caseBattery)
         assertEquals("AAP_CLASSIC_EXACT", merged.batterySource)
         assertEquals(900L, merged.batteryCapturedAt)
+    }
+
+    @Test
+    fun exactPodsDoNotFreezeCoarseCaseBattery() {
+        val current = AirPodsState(
+            deviceId = "classic-address",
+            deviceProfileId = "profile-a",
+            model = AirPodsModel.AIRPODS_PRO,
+            leftBattery = 96,
+            rightBattery = 83,
+            caseBattery = 44,
+            batterySource = "AAP_CLASSIC_EXACT",
+            batteryCapturedAt = 900L,
+            leftBatterySource = "AAP_CLASSIC_EXACT",
+            rightBatterySource = "AAP_CLASSIC_EXACT",
+            caseBatterySource = "BLE_PUBLIC_COARSE",
+            leftBatteryCapturedAt = 900L,
+            rightBatteryCapturedAt = 900L,
+            caseBatteryCapturedAt = 900L,
+            detected = true,
+            connectionState = AirPodsConnectionState.ANDROID_CONNECTED,
+        )
+        val coarse = ParsedAirPodsPacket(
+            model = AirPodsModel.AIRPODS_PRO,
+            leftBattery = 90,
+            rightBattery = 80,
+            caseBattery = 40,
+            leftCharging = false,
+            rightCharging = false,
+            caseCharging = false,
+            leftInCase = false,
+            rightInCase = false,
+            caseOpen = true,
+            parserVersion = "apple-proximity-public-v4",
+            confidence = DataConfidence.LIVE,
+        )
+
+        val merged = mergeParsedState(current, "ble-address", coarse, 1_000L, deviceProfileId = "profile-a")
+
+        assertEquals(96, merged.leftBattery)
+        assertEquals(83, merged.rightBattery)
+        assertEquals(40, merged.caseBattery)
+        assertEquals("AAP_CLASSIC_EXACT", merged.leftBatterySource)
+        assertEquals("AAP_CLASSIC_EXACT", merged.rightBatterySource)
+        assertEquals("BLE_PUBLIC_COARSE", merged.caseBatterySource)
+        assertEquals(1_000L, merged.caseBatteryCapturedAt)
+        assertEquals(1_000L, merged.batteryCapturedAt)
     }
 }
