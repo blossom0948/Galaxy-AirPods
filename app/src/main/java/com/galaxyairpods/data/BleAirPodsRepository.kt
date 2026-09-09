@@ -8,6 +8,7 @@ import com.galaxyairpods.domain.model.AirPodsModel
 import com.galaxyairpods.domain.model.AirPodsConnectionState
 import com.galaxyairpods.domain.model.AirPodsState
 import com.galaxyairpods.domain.model.AirPodsWearState
+import com.galaxyairpods.domain.model.BatterySamplePolicy
 import com.galaxyairpods.domain.model.ChargingEvidence
 import com.galaxyairpods.domain.model.ChargingState
 import com.galaxyairpods.domain.model.DataConfidence
@@ -305,21 +306,50 @@ internal fun mergeParsedState(
     // Battery provenance is component-specific. AAP notifications commonly
     // contain L/R but omit the case, so a global exact flag would incorrectly
     // freeze an older coarse case value forever.
-    fun isExactAapBattery(source: String?, value: Int?): Boolean = sameDevice &&
-        value != null && source == AirPodsDataStore.BatterySource.AAP_CLASSIC_EXACT.name
+    fun isFreshExactAapBattery(
+        source: String?,
+        value: Int?,
+        capturedAt: Long?,
+    ): Boolean = sameDevice &&
+        value != null &&
+        source == BatterySamplePolicy.AAP_EXACT &&
+        capturedAt != null &&
+        capturedAt <= seenAt &&
+        seenAt - capturedAt <= BATTERY_FRESHNESS_MS
 
     // Compatibility for an in-memory state created by an older process: keep
     // its exact L/R values, but require explicit per-case provenance so the
     // known inherited/coarse case value can be refreshed.
-    val exactLeftBattery = isExactAapBattery(current.leftBatterySource, current.leftBattery) ||
+    val exactLeftBattery = isFreshExactAapBattery(
+        current.leftBatterySource,
+        current.leftBattery,
+        current.leftBatteryCapturedAt ?: current.batteryCapturedAt,
+    ) ||
         (sameDevice && current.leftBatterySource == null &&
-            current.batterySource == AirPodsDataStore.BatterySource.AAP_CLASSIC_EXACT.name &&
-            current.leftBattery != null)
-    val exactRightBattery = isExactAapBattery(current.rightBatterySource, current.rightBattery) ||
+            current.batterySource == BatterySamplePolicy.AAP_EXACT &&
+            current.leftBattery != null &&
+            current.batteryCapturedAt != null &&
+            current.batteryCapturedAt <= seenAt &&
+            seenAt - current.batteryCapturedAt <= BATTERY_FRESHNESS_MS)
+    val exactRightBattery = isFreshExactAapBattery(
+        current.rightBatterySource,
+        current.rightBattery,
+        current.rightBatteryCapturedAt ?: current.batteryCapturedAt,
+    ) ||
         (sameDevice && current.rightBatterySource == null &&
-            current.batterySource == AirPodsDataStore.BatterySource.AAP_CLASSIC_EXACT.name &&
-            current.rightBattery != null)
-    val exactCaseBattery = isExactAapBattery(current.caseBatterySource, current.caseBattery)
+            current.batterySource == BatterySamplePolicy.AAP_EXACT &&
+            current.rightBattery != null &&
+            current.batteryCapturedAt != null &&
+            current.batteryCapturedAt <= seenAt &&
+            seenAt - current.batteryCapturedAt <= BATTERY_FRESHNESS_MS)
+    val exactCaseBattery = isFreshExactAapBattery(
+        current.caseBatterySource,
+        current.caseBattery,
+        // An AAP frame can update L/R without containing a case entry. The
+        // global frame timestamp must not make that inherited case value look
+        // like a fresh exact sample.
+        current.caseBatteryCapturedAt,
+    )
 
     val leftClosedCaseZero = isClosedCaseZero(
         incoming = packet.leftBattery,
@@ -393,7 +423,9 @@ internal fun mergeParsedState(
     val caseBatteryCapturedAt = when {
         freshCaseBattery -> seenAt
         sameDevice -> current.caseBatteryCapturedAt
-            ?: current.batteryCapturedAt.takeIf { current.caseBattery != null }
+            ?: current.batteryCapturedAt.takeIf {
+                current.caseBattery != null && current.caseBatterySource != BatterySamplePolicy.AAP_EXACT
+            }
         else -> null
     }
     val hasExactAapBattery = listOf(
@@ -595,5 +627,10 @@ internal fun sameLogicalAirPods(
     (incomingProfileId != null && current.deviceProfileId == incomingProfileId) ||
     (allowModelFallback && current.detected && current.model.isCompatibleWith(incomingModel))
 
+// AAP exact values are event-driven. Once the exact sample is no longer fresh,
+// a newer public BLE sample is allowed to correct it instead of being frozen
+// behind a stale case value. The value itself remains available as last-known
+// display data through DataStore until its normal display TTL expires.
+private const val BATTERY_FRESHNESS_MS = 10_000L
 private const val CHARGING_TTL_MS = 20_000L
 private const val WEAR_TTL_MS = 15_000L

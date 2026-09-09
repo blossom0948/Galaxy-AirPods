@@ -21,6 +21,19 @@ internal object AapBatteryProtocol {
     )
 
     /**
+     * Enables the accessory feature set used by AACP battery notifications.
+     *
+     * Some AirPods firmware does not emit the complete component battery
+     * notification (especially the case entry) until this request is sent
+     * after the handshake. This command is never a battery value; only a
+     * subsequent valid 0x0004 frame can promote a sample.
+     */
+    val featureFlags: ByteArray = byteArrayOf(
+        0x04, 0x00, 0x04, 0x00, 0x4D, 0x00, 0xD7.toByte(),
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    )
+
+    /**
      * Notification masks used by different AirPods/Samsung generations.
      *
      * v0.3.8 registered both EF and FF. Later media-control changes reduced

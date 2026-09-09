@@ -1,5 +1,6 @@
 package com.galaxyairpods.data
 
+import com.galaxyairpods.data.bluetooth.AppleAirPodsParser
 import com.galaxyairpods.domain.model.AirPodsModel
 import com.galaxyairpods.domain.model.AirPodsConnectionState
 import com.galaxyairpods.domain.model.AirPodsState
@@ -246,6 +247,34 @@ class BleAirPodsRepositoryTest {
     }
 
     @Test
+    fun podOnlyAdvertisementUpdatesCoarseCaseBattery() {
+        val current = AirPodsState(
+            deviceId = "ble-address",
+            model = AirPodsModel.AIRPODS_PRO,
+            leftBattery = 80,
+            rightBattery = 70,
+            caseBattery = 44,
+            caseBatterySource = "BLE_PUBLIC_COARSE",
+            caseBatteryCapturedAt = 900L,
+            detected = true,
+            connectionState = AirPodsConnectionState.NEARBY_ONLY,
+        )
+        val packet = requireNotNull(
+            AppleAirPodsParser.parseManufacturerData(
+                // status=0x2B has no lid context, but its low case nibble (0x5)
+                // is still a valid public coarse case measurement.
+                "0719010e202b66850100050000000000000000000000000000000".hex(),
+            ),
+        )
+
+        val merged = mergeParsedState(current, "ble-address", packet, 1_000L)
+
+        assertEquals(50, packet.caseBattery)
+        assertEquals(50, merged.caseBattery)
+        assertEquals(1_000L, merged.caseBatteryCapturedAt)
+    }
+
+    @Test
     fun coarseBleDoesNotDowngradeAnExactAapBatterySample() {
         val current = AirPodsState(
             deviceId = "classic-address",
@@ -335,4 +364,48 @@ class BleAirPodsRepositoryTest {
         assertEquals(1_000L, merged.caseBatteryCapturedAt)
         assertEquals(1_000L, merged.batteryCapturedAt)
     }
+
+    @Test
+    fun freshCoarseCaseReplacesStaleExactCaseInLiveMerge() {
+        val now = System.currentTimeMillis()
+        val current = AirPodsState(
+            deviceId = "classic-address",
+            deviceProfileId = "profile-a",
+            model = AirPodsModel.AIRPODS_PRO,
+            caseBattery = 44,
+            caseBatterySource = "AAP_CLASSIC_EXACT",
+            caseBatteryCapturedAt = now - 20 * 60 * 1000L,
+            detected = true,
+            connectionState = AirPodsConnectionState.ANDROID_CONNECTED,
+        )
+        val coarse = ParsedAirPodsPacket(
+            model = AirPodsModel.AIRPODS_PRO,
+            leftBattery = null,
+            rightBattery = null,
+            caseBattery = 40,
+            leftCharging = null,
+            rightCharging = null,
+            caseCharging = false,
+            leftInCase = null,
+            rightInCase = null,
+            caseOpen = true,
+            parserVersion = "apple-proximity-public-v4",
+            confidence = DataConfidence.LIVE,
+        )
+
+        val merged = mergeParsedState(
+            current = current,
+            deviceId = "classic-address",
+            packet = coarse,
+            seenAt = now,
+            deviceProfileId = "profile-a",
+        )
+
+        assertEquals(40, merged.caseBattery)
+        assertEquals("BLE_PUBLIC_COARSE", merged.caseBatterySource)
+        assertEquals(now, merged.caseBatteryCapturedAt)
+    }
 }
+
+private fun String.hex(): ByteArray =
+    chunked(2).map { it.toInt(16).toByte() }.toByteArray()

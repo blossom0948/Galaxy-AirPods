@@ -320,8 +320,85 @@ enum class BatterySlot(val label: String) {
     CASE("케이스"),
 }
 
+/**
+ * A battery value and the evidence that produced it.  Keeping this as a
+ * small value object lets the live repository and DataStore use the exact
+ * same arbitration rule when their collectors race to persist a state.
+ */
+internal data class BatterySample(
+    val value: Int?,
+    val source: String?,
+    val capturedAt: Long?,
+)
+
+/**
+ * Chooses between two samples without allowing an older exact sample to
+ * overwrite a newer public-BLE sample.  The first argument is the sample from
+ * the event currently being processed; the second is the stored/previous
+ * sample.  Source precision only breaks ties between equally fresh samples.
+ */
+internal object BatterySamplePolicy {
+    const val AAP_EXACT = "AAP_CLASSIC_EXACT"
+    const val BLE_PUBLIC_COARSE = "BLE_PUBLIC_COARSE"
+    const val LEGACY_COARSE = "LEGACY_COARSE"
+
+    private const val AAP_FRESHNESS_MS = 10_000L
+    private const val BLE_FRESHNESS_MS = 30_000L
+    private const val LEGACY_FRESHNESS_MS = 15_000L
+    private const val UNKNOWN_SOURCE_FRESHNESS_MS = 5 * 60 * 1000L
+
+    fun sourceRank(source: String?): Int = when (source) {
+        AAP_EXACT -> 3
+        BLE_PUBLIC_COARSE -> 2
+        LEGACY_COARSE -> 1
+        else -> 0
+    }
+
+    fun freshnessWindowMs(source: String?): Long = when (source) {
+        AAP_EXACT -> AAP_FRESHNESS_MS
+        BLE_PUBLIC_COARSE -> BLE_FRESHNESS_MS
+        LEGACY_COARSE -> LEGACY_FRESHNESS_MS
+        else -> UNKNOWN_SOURCE_FRESHNESS_MS
+    }
+
+    fun isFresh(sample: BatterySample, now: Long): Boolean = sample.capturedAt != null &&
+        sample.capturedAt <= now &&
+        now - sample.capturedAt <= freshnessWindowMs(sample.source)
+
+    fun choose(
+        current: BatterySample,
+        previous: BatterySample,
+        now: Long,
+    ): BatterySample {
+        if (current.value == null) return previous
+        if (previous.value == null) return current
+
+        val currentIsFresh = isFresh(current, now)
+        val previousIsFresh = isFresh(previous, now)
+        if (currentIsFresh != previousIsFresh) {
+            return if (currentIsFresh) current else previous
+        }
+
+        val currentRank = sourceRank(current.source)
+        val previousRank = sourceRank(previous.source)
+        val previousIsStronger = previousRank > currentRank || (
+            previousRank == currentRank &&
+                previous.capturedAt != null &&
+                (current.capturedAt == null || previous.capturedAt > current.capturedAt)
+            )
+        return if (previousIsStronger) previous else current
+    }
+
+    fun strongest(samples: Iterable<BatterySample>): BatterySample? = samples
+        .filter { it.value != null }
+        .maxWithOrNull(
+            compareBy<BatterySample> { sourceRank(it.source) }
+                .thenBy { it.capturedAt ?: Long.MIN_VALUE },
+        )
+}
+
 /** Keeps persisted fallback battery values visible while a live profile event
- * is still being merged in. Live non-null fields always win. */
+ * is still being merged in. Freshness is evaluated before source precision. */
 fun AirPodsState.mergeKnownValuesFrom(fallback: AirPodsState?): AirPodsState {
     if (fallback == null) return this
     val sameDevice = when {
@@ -332,15 +409,87 @@ fun AirPodsState.mergeKnownValuesFrom(fallback: AirPodsState?): AirPodsState {
     }
     if (!sameDevice) return this
 
+    val now = System.currentTimeMillis()
+
+    fun explicitOrGlobalSource(state: AirPodsState, explicit: String?): String? =
+        explicit ?: state.batterySource
+
+    // A legacy global AAP source was also written when only L/R arrived. It
+    // must never promote an inherited case value to exact precision.
+    fun caseSource(state: AirPodsState): String? = state.caseBatterySource
+        ?: state.batterySource?.takeUnless { it == "AAP_CLASSIC_EXACT" }
+
+    fun capturedAt(
+        state: AirPodsState,
+        explicit: Long?,
+        value: Int?,
+        caseSample: Boolean = false,
+    ): Long? {
+        if (explicit != null) return explicit
+        if (value == null) return null
+        // A global AAP timestamp often describes only the L/R entries. Do not
+        // attach it to an inherited case value that has no case provenance.
+        if (caseSample && caseSource(state) == null) return null
+        return state.batteryCapturedAt
+    }
+
+    val left = BatterySamplePolicy.choose(
+        current = BatterySample(
+            leftBattery,
+            explicitOrGlobalSource(this, leftBatterySource),
+            capturedAt(this, leftBatteryCapturedAt, leftBattery),
+        ),
+        previous = BatterySample(
+            fallback.leftBattery,
+            explicitOrGlobalSource(fallback, fallback.leftBatterySource),
+            capturedAt(fallback, fallback.leftBatteryCapturedAt, fallback.leftBattery),
+        ),
+        now = now,
+    )
+    val right = BatterySamplePolicy.choose(
+        current = BatterySample(
+            rightBattery,
+            explicitOrGlobalSource(this, rightBatterySource),
+            capturedAt(this, rightBatteryCapturedAt, rightBattery),
+        ),
+        previous = BatterySample(
+            fallback.rightBattery,
+            explicitOrGlobalSource(fallback, fallback.rightBatterySource),
+            capturedAt(fallback, fallback.rightBatteryCapturedAt, fallback.rightBattery),
+        ),
+        now = now,
+    )
+    val case = BatterySamplePolicy.choose(
+        current = BatterySample(
+            caseBattery,
+            caseSource(this),
+            capturedAt(this, caseBatteryCapturedAt, caseBattery, caseSample = true),
+        ),
+        previous = BatterySample(
+            fallback.caseBattery,
+            caseSource(fallback),
+            capturedAt(fallback, fallback.caseBatteryCapturedAt, fallback.caseBattery, caseSample = true),
+        ),
+        now = now,
+    )
+    val mergedBatterySource = BatterySamplePolicy.strongest(listOf(left, right, case))?.source
+        ?: batterySource
+        ?: fallback.batterySource
+    val mergedBatteryCapturedAt = listOfNotNull(
+        left.capturedAt,
+        right.capturedAt,
+        case.capturedAt,
+    ).maxOrNull()
+
     return copy(
         model = when {
             model == AirPodsModel.UNKNOWN || model == AirPodsModel.AIRPODS -> fallback.model
             else -> model
         },
         deviceProfileId = deviceProfileId ?: fallback.deviceProfileId,
-        leftBattery = leftBattery ?: fallback.leftBattery,
-        rightBattery = rightBattery ?: fallback.rightBattery,
-        caseBattery = caseBattery ?: fallback.caseBattery,
+        leftBattery = left.value,
+        rightBattery = right.value,
+        caseBattery = case.value,
         leftCharging = leftCharging ?: fallback.leftCharging,
         rightCharging = rightCharging ?: fallback.rightCharging,
         caseCharging = caseCharging ?: fallback.caseCharging,
@@ -353,15 +502,14 @@ fun AirPodsState.mergeKnownValuesFrom(fallback: AirPodsState?): AirPodsState {
         aapReady = aapReady || fallback.aapReady,
         deviceName = deviceName ?: fallback.deviceName,
         lastSeenAt = maxOf(lastSeenAt ?: 0L, fallback.lastSeenAt ?: 0L).takeIf { it > 0L },
-        batterySource = batterySource ?: fallback.batterySource,
-        batteryCapturedAt = maxOf(batteryCapturedAt ?: 0L, fallback.batteryCapturedAt ?: 0L)
-            .takeIf { it > 0L },
-        leftBatterySource = leftBatterySource ?: fallback.leftBatterySource,
-        rightBatterySource = rightBatterySource ?: fallback.rightBatterySource,
-        caseBatterySource = caseBatterySource ?: fallback.caseBatterySource,
-        leftBatteryCapturedAt = leftBatteryCapturedAt ?: fallback.leftBatteryCapturedAt,
-        rightBatteryCapturedAt = rightBatteryCapturedAt ?: fallback.rightBatteryCapturedAt,
-        caseBatteryCapturedAt = caseBatteryCapturedAt ?: fallback.caseBatteryCapturedAt,
+        batterySource = mergedBatterySource,
+        batteryCapturedAt = mergedBatteryCapturedAt,
+        leftBatterySource = left.source,
+        rightBatterySource = right.source,
+        caseBatterySource = case.source,
+        leftBatteryCapturedAt = left.capturedAt,
+        rightBatteryCapturedAt = right.capturedAt,
+        caseBatteryCapturedAt = case.capturedAt,
         primaryPodIsLeft = primaryPodIsLeft ?: fallback.primaryPodIsLeft,
         leftChargingEvidence = leftChargingEvidence.takeIf { it.state != ChargingState.UNKNOWN }
             ?: fallback.leftChargingEvidence,

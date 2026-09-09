@@ -109,6 +109,25 @@ class AirPodsAdvertisementParserTest {
 
         requireNotNull(packet)
         assertNull(packet.caseOpen)
+        // Bit 4 is still case context, so the public case nibble is usable;
+        // only the lid bit is withheld because this broadcaster is outside.
+        assertEquals(50, packet.caseBattery)
+        assertEquals(false, packet.caseCharging)
+    }
+
+    @Test
+    fun decodesCaseTelemetryFromPodOnlyFrame() {
+        // status=0x2B has no in-case/context bit, but the public low nibble is
+        // still the case battery field. Only the lid byte is withheld without
+        // in-case proof, so a closed-case advertisement can refresh the case.
+        val packet = AppleAirPodsParser.parseManufacturerData(
+            "0719010e202b66850100050000000000000000000000000000000".hex(),
+        )
+
+        requireNotNull(packet)
+        assertEquals(50, packet.caseBattery)
+        assertEquals(false, packet.caseCharging)
+        assertNull(packet.caseOpen)
     }
 
     @Test

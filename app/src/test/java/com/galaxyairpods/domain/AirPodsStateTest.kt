@@ -57,6 +57,63 @@ class AirPodsStateTest {
     }
 
     @Test
+    fun freshCoarseLiveCaseReplacesStaleExactPersistedCase() {
+        val now = System.currentTimeMillis()
+        val live = AirPodsState(
+            deviceId = "classic-address",
+            model = AirPodsModel.AIRPODS_PRO,
+            leftBattery = 96,
+            rightBattery = 83,
+            caseBattery = 40,
+            batterySource = "BLE_PUBLIC_COARSE",
+            batteryCapturedAt = now,
+            caseBatterySource = "BLE_PUBLIC_COARSE",
+            caseBatteryCapturedAt = now,
+            connected = true,
+            detected = true,
+        )
+        val stored = AirPodsState(
+            deviceId = "classic-address",
+            model = AirPodsModel.AIRPODS_PRO,
+            caseBattery = 44,
+            caseBatterySource = "AAP_CLASSIC_EXACT",
+            caseBatteryCapturedAt = now - 20 * 60 * 1000L,
+            detected = true,
+        )
+
+        val merged = live.mergeKnownValuesFrom(stored)
+
+        assertEquals(40, merged.caseBattery)
+        assertEquals("BLE_PUBLIC_COARSE", merged.caseBatterySource)
+        assertEquals(now, merged.caseBatteryCapturedAt)
+    }
+
+    @Test
+    fun freshExactCaseStillWinsOverFreshCoarseCase() {
+        val now = System.currentTimeMillis()
+        val live = AirPodsState(
+            deviceId = "classic-address",
+            model = AirPodsModel.AIRPODS_PRO,
+            caseBattery = 40,
+            caseBatterySource = "BLE_PUBLIC_COARSE",
+            caseBatteryCapturedAt = now,
+        )
+        val stored = AirPodsState(
+            deviceId = "classic-address",
+            model = AirPodsModel.AIRPODS_PRO,
+            caseBattery = 44,
+            caseBatterySource = "AAP_CLASSIC_EXACT",
+            caseBatteryCapturedAt = now - 1_000L,
+        )
+
+        val merged = live.mergeKnownValuesFrom(stored)
+
+        assertEquals(44, merged.caseBattery)
+        assertEquals("AAP_CLASSIC_EXACT", merged.caseBatterySource)
+        assertEquals(now - 1_000L, merged.caseBatteryCapturedAt)
+    }
+
+    @Test
     fun staleChargingDoesNotSurviveResolution() {
         val now = 1_000_000L
         val state = AirPodsState(

@@ -12,6 +12,9 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.galaxyairpods.domain.model.AirPodsModel
 import com.galaxyairpods.domain.model.AirPodsState
+import com.galaxyairpods.domain.model.BatterySample
+import com.galaxyairpods.domain.model.BatterySamplePolicy
+import com.galaxyairpods.domain.model.BatterySlot
 import com.galaxyairpods.domain.model.DataConfidence
 import com.galaxyairpods.domain.model.isCompatibleWith
 import kotlinx.coroutines.flow.Flow
@@ -270,7 +273,120 @@ class AirPodsDataStore(private val context: Context) {
             val storedModel = preferences[Keys.model]?.let { value ->
                 AirPodsModel.entries.firstOrNull { it.name == value }
             }
-            val preserveKnownFields = storedModel != null && storedModel.isCompatibleWith(state.model)
+            val storedProfileId = preferences[Keys.deviceProfileId]
+            val profileMatches = when {
+                state.deviceProfileId != null && storedProfileId != null ->
+                    state.deviceProfileId == storedProfileId
+                // Older installs may not have a profile id yet. Preserve the
+                // last-known sample only when there is no identity conflict;
+                // the next validated profile event will establish the id.
+                state.deviceProfileId == null || storedProfileId == null -> true
+                else -> false
+            }
+            val preserveKnownFields = storedModel != null &&
+                storedModel.isCompatibleWith(state.model) &&
+                profileMatches
+
+            val now = System.currentTimeMillis()
+            val incomingGlobalSource = batterySource?.name ?: state.batterySource
+
+            fun stateBatterySource(slot: BatterySlot): String? {
+                val explicit = when (slot) {
+                    BatterySlot.LEFT -> state.leftBatterySource
+                    BatterySlot.RIGHT -> state.rightBatterySource
+                    BatterySlot.CASE -> state.caseBatterySource
+                }
+                if (explicit != null) return explicit
+                return when (slot) {
+                    BatterySlot.CASE -> incomingGlobalSource
+                        ?.takeUnless { it == BatterySamplePolicy.AAP_EXACT }
+                    BatterySlot.LEFT,
+                    BatterySlot.RIGHT,
+                    -> incomingGlobalSource
+                }
+            }
+
+            fun stateBatteryCapturedAt(slot: BatterySlot, value: Int?): Long? {
+                if (value == null) return null
+                val explicit = when (slot) {
+                    BatterySlot.LEFT -> state.leftBatteryCapturedAt
+                    BatterySlot.RIGHT -> state.rightBatteryCapturedAt
+                    BatterySlot.CASE -> state.caseBatteryCapturedAt
+                }
+                if (explicit != null) return explicit
+                // AAP snapshots often contain only L/R. The global AAP
+                // timestamp belongs to that frame, not to an inherited case
+                // value. Never relabel the old case as a fresh exact sample.
+                if (slot == BatterySlot.CASE && stateBatterySource(slot) == null) return null
+                return state.batteryCapturedAt
+            }
+
+            fun incomingBatterySample(slot: BatterySlot): BatterySample {
+                val value = state.batteryFor(slot)
+                return BatterySample(
+                    value = value,
+                    source = stateBatterySource(slot),
+                    capturedAt = stateBatteryCapturedAt(slot, value),
+                )
+            }
+
+            val storedGlobalSource = preferences[Keys.batterySource]
+            fun storedBatterySample(slot: BatterySlot): BatterySample {
+                val value = preferences[
+                    when (slot) {
+                        BatterySlot.LEFT -> Keys.leftBattery
+                        BatterySlot.RIGHT -> Keys.rightBattery
+                        BatterySlot.CASE -> Keys.caseBattery
+                    }
+                ]
+                val source = when (slot) {
+                    BatterySlot.LEFT -> preferences[Keys.leftBatterySource]
+                        ?: storedGlobalSource.takeIf { value != null }
+                    BatterySlot.RIGHT -> preferences[Keys.rightBatterySource]
+                        ?: storedGlobalSource.takeIf { value != null }
+                    BatterySlot.CASE -> preferences[Keys.caseBatterySource]
+                        ?: legacyCaseBatterySource(storedGlobalSource, value)
+                }
+                val capturedAt = when (slot) {
+                    BatterySlot.LEFT -> preferences[Keys.leftBatteryCapturedAt]
+                    BatterySlot.RIGHT -> preferences[Keys.rightBatteryCapturedAt]
+                    BatterySlot.CASE -> preferences[Keys.caseBatteryCapturedAt]
+                } ?: preferences[Keys.batteryUpdatedAt].takeIf { value != null }
+                return BatterySample(value = value, source = source, capturedAt = capturedAt)
+            }
+
+            val selectedLeftBattery = if (preserveKnownFields) {
+                BatterySamplePolicy.choose(
+                    current = incomingBatterySample(BatterySlot.LEFT),
+                    previous = storedBatterySample(BatterySlot.LEFT),
+                    now = now,
+                )
+            } else {
+                incomingBatterySample(BatterySlot.LEFT)
+            }
+            val selectedRightBattery = if (preserveKnownFields) {
+                BatterySamplePolicy.choose(
+                    current = incomingBatterySample(BatterySlot.RIGHT),
+                    previous = storedBatterySample(BatterySlot.RIGHT),
+                    now = now,
+                )
+            } else {
+                incomingBatterySample(BatterySlot.RIGHT)
+            }
+            val selectedCaseBattery = if (preserveKnownFields) {
+                BatterySamplePolicy.choose(
+                    current = incomingBatterySample(BatterySlot.CASE),
+                    previous = storedBatterySample(BatterySlot.CASE),
+                    now = now,
+                )
+            } else {
+                incomingBatterySample(BatterySlot.CASE)
+            }
+            val selectedBatterySamples = listOf(
+                selectedLeftBattery,
+                selectedRightBattery,
+                selectedCaseBattery,
+            )
 
             // The raw Bluetooth address is an in-memory transport handle only.
             // Remove the legacy key so older installations are migrated away
@@ -278,27 +394,15 @@ class AirPodsDataStore(private val context: Context) {
             preferences.remove(Keys.deviceId)
             preferences.putNullable(Keys.deviceProfileId, state.deviceProfileId)
             preferences[Keys.model] = state.model.name
-            preferences.putNullablePreserving(Keys.leftBattery, state.leftBattery, preserveKnownFields)
-            preferences.putNullablePreserving(Keys.rightBattery, state.rightBattery, preserveKnownFields)
-            preferences.putNullablePreserving(Keys.caseBattery, state.caseBattery, preserveKnownFields)
-            preferences.putNullablePreserving(Keys.leftBatterySource, state.leftBatterySource, preserveKnownFields)
-            preferences.putNullablePreserving(Keys.rightBatterySource, state.rightBatterySource, preserveKnownFields)
-            preferences.putNullablePreserving(Keys.caseBatterySource, state.caseBatterySource, preserveKnownFields)
-            preferences.putNullablePreserving(
-                Keys.leftBatteryCapturedAt,
-                state.leftBatteryCapturedAt,
-                preserveKnownFields,
-            )
-            preferences.putNullablePreserving(
-                Keys.rightBatteryCapturedAt,
-                state.rightBatteryCapturedAt,
-                preserveKnownFields,
-            )
-            preferences.putNullablePreserving(
-                Keys.caseBatteryCapturedAt,
-                state.caseBatteryCapturedAt,
-                preserveKnownFields,
-            )
+            preferences.putNullable(Keys.leftBattery, selectedLeftBattery.value)
+            preferences.putNullable(Keys.rightBattery, selectedRightBattery.value)
+            preferences.putNullable(Keys.caseBattery, selectedCaseBattery.value)
+            preferences.putNullable(Keys.leftBatterySource, selectedLeftBattery.source)
+            preferences.putNullable(Keys.rightBatterySource, selectedRightBattery.source)
+            preferences.putNullable(Keys.caseBatterySource, selectedCaseBattery.source)
+            preferences.putNullable(Keys.leftBatteryCapturedAt, selectedLeftBattery.capturedAt)
+            preferences.putNullable(Keys.rightBatteryCapturedAt, selectedRightBattery.capturedAt)
+            preferences.putNullable(Keys.caseBatteryCapturedAt, selectedCaseBattery.capturedAt)
             preferences.putNullablePreserving(Keys.leftCharging, state.leftCharging, preserveKnownFields)
             preferences.putNullablePreserving(Keys.rightCharging, state.rightCharging, preserveKnownFields)
             preferences.putNullablePreserving(Keys.caseCharging, state.caseCharging, preserveKnownFields)
@@ -317,22 +421,17 @@ class AirPodsDataStore(private val context: Context) {
             preferences.putNullable(Keys.lastSeenAt, state.lastSeenAt)
             preferences[Keys.confidence] = state.confidence.name
             preferences.putNullable(Keys.primaryPodIsLeft, state.primaryPodIsLeft)
-            if (state.hasAnyBattery) {
-                val source = batterySource?.name ?: state.batterySource
-                    ?: state.leftBatterySource
-                    ?: state.rightBatterySource
-                    ?: state.caseBatterySource
-                val capturedAt = state.batteryCapturedAt
-                    ?: maxOf(
-                        state.leftBatteryCapturedAt ?: 0L,
-                        state.rightBatteryCapturedAt ?: 0L,
-                        state.caseBatteryCapturedAt ?: 0L,
-                    ).takeIf { it > 0L }
+            val strongestBattery = BatterySamplePolicy.strongest(selectedBatterySamples)
+            if (strongestBattery != null) {
+                val source = strongestBattery.source
+                    ?: batterySource?.name
+                    ?: state.batterySource
+                val capturedAt = selectedBatterySamples.mapNotNull { it.capturedAt }.maxOrNull()
                 if (source != null) {
                     preferences[Keys.batterySource] = source
                     preferences[Keys.batteryUpdatedAt] = capturedAt
                         ?: state.lastSeenAt
-                        ?: System.currentTimeMillis()
+                        ?: now
                 } else {
                     // Never leave a source/timestamp claiming a battery
                     // sample that the current state does not identify.

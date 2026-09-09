@@ -137,7 +137,6 @@ class AppleAirPodsParser : AirPodsPacketParser {
             val status = payload[3].u8()
             val podBattery = payload[4].u8()
             val flags = payload[5].u8() shr 4
-            val caseBattery = percentFromNibble(payload[5].u8() and 0x0F)
 
             if (model.isMax) {
                 return ParsedAirPodsPacket(
@@ -167,16 +166,20 @@ class AppleAirPodsParser : AirPodsPacketParser {
 
             val leftCharging = if (valuesFlipped) flags and 0x02 != 0 else flags and 0x01 != 0
             val rightCharging = if (valuesFlipped) flags and 0x01 != 0 else flags and 0x02 != 0
-            val caseCharging = flags and 0x04 != 0
 
             val thisPodInCase = status and 0x40 != 0
             val onePodInCase = status and 0x10 != 0
             val bothPodsInCase = status and 0x04 != 0
             val caseContext = thisPodInCase || onePodInCase || bothPodsInCase
-            // A frame with only bit 4 set is emitted by the pod outside the case
-            // and carries a stale lid byte. Only an in-case pod (bit 6) or a
-            // frame with both pods in the case (bit 2) can reliably report the lid.
+            // The public low nibble is the case battery field even when both
+            // pods are currently out of the case. It is coarse (10% steps),
+            // but it is still a real case sample; 0xF is converted to null by
+            // percentFromNibble. Only the lid byte needs the stronger
+            // in-case context because it is known to remain stale on the
+            // out-of-case broadcaster.
             val lidReadingReliable = thisPodInCase || bothPodsInCase
+            val caseBattery = percentFromNibble(payload[5].u8() and 0x0F)
+            val caseCharging = flags and 0x04 != 0
             val caseOpen = if (caseContext && lidReadingReliable) {
                 ((payload[6].u8() shr 3) and 0x01) == 0
             } else {

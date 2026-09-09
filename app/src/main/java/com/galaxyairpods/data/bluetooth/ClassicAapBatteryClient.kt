@@ -75,6 +75,10 @@ internal class ClassicAapBatteryClient {
         try {
             connectWithTimeout(socket, deviceId, socketHandle.strategy)
             send(socket, deviceId, "HANDSHAKE", AapBatteryProtocol.handshake)
+            // A few firmware versions only enable the full component battery
+            // notification after feature negotiation. Keep this immediately
+            // after the handshake in the classic AACP startup sequence.
+            send(socket, deviceId, "SET_FEATURE_FLAGS", AapBatteryProtocol.featureFlags)
             // Preserve the working v0.3.8 ordering for AirPods firmware that
             // only applies the first registration during session setup. The
             // response-gated registration below still sends every known mask.
@@ -214,6 +218,7 @@ internal class ClassicAapBatteryClient {
                         } else if (!startupComplete) {
                             // Registration is ordered after the handshake response
                             // and is performed once per session.
+                            send(socket, deviceId, "SET_FEATURE_FLAGS_RESPONSE", AapBatteryProtocol.featureFlags)
                             AapBatteryProtocol.notificationProfiles.forEach { (profile, bytes) ->
                                 send(socket, deviceId, "NOTIFICATION_$profile", bytes)
                             }
@@ -226,6 +231,12 @@ internal class ClassicAapBatteryClient {
                                         deviceId,
                                         "BATTERY_REQUEST_RETRY",
                                         "no_0x0004_sample",
+                                    )
+                                    send(
+                                        socket,
+                                        deviceId,
+                                        "SET_FEATURE_FLAGS_RETRY",
+                                        AapBatteryProtocol.featureFlags,
                                     )
                                     AapBatteryProtocol.notificationProfiles.forEach { (profile, bytes) ->
                                         send(socket, deviceId, "NOTIFICATION_RETRY_$profile", bytes)
