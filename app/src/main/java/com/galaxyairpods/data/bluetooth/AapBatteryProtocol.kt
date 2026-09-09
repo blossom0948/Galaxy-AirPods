@@ -108,6 +108,12 @@ internal object AapBatteryProtocol {
      * primary pod status, then secondary pod status. The public observation is
      * a variable-length stream in practice, so accept only the exact frame
      * length after the message parser has validated the header.
+     *
+     * Some AirPods Pro sessions on Samsung send 0x03 for a pod whose AAP
+     * placement is temporarily unavailable (for example, the other pod has
+     * dropped from the active session). It is a known non-in-ear state for
+     * wear transitions, not a malformed packet. We retain it as
+     * DISCONNECTED so callers do not mistake it for IN_CASE.
      */
     fun parseEarDetection(frame: AapFrame.Message): AapEarDetectionSnapshot? {
         if (frame.command != EAR_DETECTION_COMMAND || frame.payload.size != 2) return null
@@ -120,6 +126,7 @@ internal object AapBatteryProtocol {
         0x00 -> AapEarStatus.IN_EAR
         0x01 -> AapEarStatus.OUT_OF_EAR
         0x02 -> AapEarStatus.IN_CASE
+        0x03 -> AapEarStatus.DISCONNECTED
         else -> null
     }
 
@@ -194,6 +201,7 @@ internal enum class AapEarStatus {
     IN_EAR,
     OUT_OF_EAR,
     IN_CASE,
+    DISCONNECTED,
 }
 
 internal data class AapEarDetectionSnapshot(

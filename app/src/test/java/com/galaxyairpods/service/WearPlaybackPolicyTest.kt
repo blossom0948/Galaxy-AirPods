@@ -6,6 +6,32 @@ import org.junit.Test
 
 class WearPlaybackPolicyTest {
     @Test
+    fun eventDrivenAapMayDefineAChangeAfterAQuietPeriod() {
+        assertEquals(
+            false,
+            shouldResetWearTransition(
+                previousCapturedAtElapsedMs = 1_000L,
+                currentCapturedAtElapsedMs = 30_000L,
+                previousSource = "AAP_CLASSIC_0x0006",
+                currentSource = "AAP_CLASSIC_0x0006",
+            ),
+        )
+    }
+
+    @Test
+    fun periodicBleGapStartsANewWearBaseline() {
+        assertEquals(
+            true,
+            shouldResetWearTransition(
+                previousCapturedAtElapsedMs = 1_000L,
+                currentCapturedAtElapsedMs = 30_000L,
+                previousSource = "BLE_PUBLIC_EAR_STATE",
+                currentSource = "BLE_PUBLIC_EAR_STATE",
+            ),
+        )
+    }
+
+    @Test
     fun removalPausesOnlyWhenMediaWasPlayingAndInsertionResumesIt() {
         val policy = WearPlaybackPolicy()
 

@@ -84,7 +84,18 @@ internal fun mapAapWearState(
         else AirPodsWearState.RIGHT_IN_EAR
     }
     if (primaryInCase || secondaryInCase) return AirPodsWearState.IN_CASE
-    return AirPodsWearState.NONE_IN_EAR
+    // 0x03 is emitted by some AirPods Pro/Samsung AAP sessions when the
+    // corresponding pod is temporarily unavailable. It is known to mean
+    // "not in ear" for the purpose of a wear transition, but it must never
+    // be interpreted as "in case" or as a battery value.
+    val allKnownNotInEar = listOf(snapshot.primary, snapshot.secondary).all {
+        it == AapEarStatus.OUT_OF_EAR || it == AapEarStatus.DISCONNECTED
+    }
+    return if (allKnownNotInEar) {
+        AirPodsWearState.NONE_IN_EAR
+    } else {
+        AirPodsWearState.UNKNOWN
+    }
 }
 
 /**

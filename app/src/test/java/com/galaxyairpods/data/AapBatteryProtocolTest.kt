@@ -90,7 +90,7 @@ class AapBatteryProtocolTest {
     fun rejectsEarDetectionWithUnknownStatusOrExtraBytes() {
         val unknownStatus = message(
             0x04, 0x00, 0x04, 0x00, 0x06, 0x00,
-            0x00, 0x03,
+            0x00, 0x04,
         )
         val extraByte = message(
             0x04, 0x00, 0x04, 0x00, 0x06, 0x00,
@@ -107,6 +107,21 @@ class AapBatteryProtocolTest {
                 AapBatteryProtocol.parseFrame(extraByte) as AapFrame.Message,
             ),
         )
+    }
+
+    @Test
+    fun acceptsObservedDisconnectedPodStatusAsKnownNonInEarState() {
+        val frame = message(
+            0x04, 0x00, 0x04, 0x00, 0x06, 0x00,
+            0x00, 0x03,
+        )
+
+        val parsed = AapBatteryProtocol.parseEarDetection(
+            AapBatteryProtocol.parseFrame(frame) as AapFrame.Message,
+        )
+
+        assertEquals(AapEarStatus.IN_EAR, parsed?.primary)
+        assertEquals(AapEarStatus.DISCONNECTED, parsed?.secondary)
     }
 
     private fun message(vararg values: Int): ByteArray =

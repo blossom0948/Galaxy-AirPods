@@ -21,6 +21,24 @@ internal enum class WearMediaAction {
     PLAY,
 }
 
+/**
+ * AAP 0x0006 is event-driven, so two valid AAP observations may be separated
+ * by a quiet period longer than the public BLE freshness window. Public BLE
+ * observations are periodic; a long gap there must start a new baseline.
+ */
+internal fun shouldResetWearTransition(
+    previousCapturedAtElapsedMs: Long?,
+    currentCapturedAtElapsedMs: Long,
+    previousSource: String?,
+    currentSource: String?,
+    maxGapMs: Long = 15_000L,
+): Boolean {
+    if (previousCapturedAtElapsedMs == null) return false
+    if (currentCapturedAtElapsedMs <= previousCapturedAtElapsedMs) return true
+    if (currentCapturedAtElapsedMs - previousCapturedAtElapsedMs <= maxGapMs) return false
+    return previousSource != "AAP_CLASSIC_0x0006" || currentSource != "AAP_CLASSIC_0x0006"
+}
+
 /** What the controller can prove about the media app at this instant. */
 private enum class MediaPlaybackObservation {
     PLAYING,
@@ -106,6 +124,7 @@ internal class WearMediaPlaybackController(
     private var pausedWithMediaKeyFallback = false
     private var pausedWithMediaKeyAtElapsedMs: Long? = null
     private var lastWearEvidenceCapturedAtElapsedMs: Long? = null
+    private var lastWearEvidenceSource: String? = null
     private var lastTargetRouteAtElapsedMs: Long? = null
     private var lastMediaWasPlaying = false
 
@@ -122,17 +141,26 @@ internal class WearMediaPlaybackController(
         }
         val capturedAtElapsedMs = state.wearCapturedAtElapsedMs!!
         val previousCapturedAtElapsedMs = lastWearEvidenceCapturedAtElapsedMs
-        if (previousCapturedAtElapsedMs != null &&
-            (capturedAtElapsedMs <= previousCapturedAtElapsedMs ||
-                capturedAtElapsedMs - previousCapturedAtElapsedMs > MAX_WEAR_EVIDENCE_GAP_MS)
+        if (shouldResetWearTransition(
+                previousCapturedAtElapsedMs = previousCapturedAtElapsedMs,
+                currentCapturedAtElapsedMs = capturedAtElapsedMs,
+                previousSource = lastWearEvidenceSource,
+                currentSource = state.wearSource,
+            )
         ) {
-            // A state that arrives after a freshness hole is a new observation,
-            // not a continuation of the old transition. In particular, it
-            // must not turn an old auto-pause token into an unexpected play.
+            // Public BLE advertisements are periodic and a gap means the
+            // previous state can no longer safely define a transition. AAP
+            // 0x0006 is different: it is an event-driven notification and can
+            // legitimately remain silent for minutes while the user keeps a
+            // single bud in the ear. Keep the in-memory baseline for that
+            // source only; persisted wear state is still rejected as stale at
+            // the entry point above and never initializes this policy.
             policy.reset()
             clearPausedSession()
+            lastWearEvidenceSource = null
         }
         lastWearEvidenceCapturedAtElapsedMs = capturedAtElapsedMs
+        lastWearEvidenceSource = state.wearSource
         val route = routeGate.check(state)
         val nowElapsedMs = SystemClock.elapsedRealtime()
         val routeWasRecentlyActive = lastTargetRouteAtElapsedMs?.let { lastActive ->
@@ -212,6 +240,7 @@ internal class WearMediaPlaybackController(
         policy.reset()
         clearPausedSession()
         lastWearEvidenceCapturedAtElapsedMs = null
+        lastWearEvidenceSource = null
         lastTargetRouteAtElapsedMs = null
         lastMediaWasPlaying = false
     }
@@ -486,7 +515,6 @@ internal class WearMediaPlaybackController(
 
     private companion object {
         const val TAG = "AirPodsWearMedia"
-        const val MAX_WEAR_EVIDENCE_GAP_MS = 15_000L
         const val ROUTE_DROP_GRACE_MS = 3_000L
         const val MEDIA_KEY_RESUME_GRACE_MS = 3_000L
     }

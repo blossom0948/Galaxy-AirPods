@@ -201,6 +201,23 @@ internal object BleScanDiagnostics {
         )
     }
 
+    /**
+     * Ear status bytes are state values, not identity or key material. Keep
+     * this debug-only shape log so an OEM-specific AAP frame can be diagnosed
+     * without ever dumping the packet itself.
+     */
+    fun logAapEarFrameShape(deviceId: String, frame: AapFrame.Message) {
+        if (!BuildConfig.DEBUG || frame.command != AapBatteryProtocol.EAR_DETECTION_COMMAND) return
+        Log.d(
+            TAG,
+            "aap_ear_frame deviceHash=${digest(deviceId.toByteArray())} " +
+                "payloadLength=${frame.payload.size} " +
+                "primaryByte=${frame.payload.getOrNull(0)?.u8() ?: -1} " +
+                "secondaryByte=${frame.payload.getOrNull(1)?.u8() ?: -1} " +
+                "trailingBytes=${frame.payload.drop(2).size}",
+        )
+    }
+
     fun logAapSocketConstructors(constructors: Array<Constructor<*>>) {
         if (!BuildConfig.DEBUG) return
         val signatures = constructors.joinToString(";") { constructor ->

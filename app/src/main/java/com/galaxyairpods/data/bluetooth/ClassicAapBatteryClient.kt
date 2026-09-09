@@ -220,6 +220,7 @@ internal class ClassicAapBatteryClient {
                             BleScanDiagnostics.logAapEarDetection(deviceId, wear)
                             onWear(wear)
                         } else if (frame.command == AapBatteryProtocol.EAR_DETECTION_COMMAND) {
+                            BleScanDiagnostics.logAapEarFrameShape(deviceId, frame)
                             BleScanDiagnostics.logAapFailure(deviceId, "ear_detection", "MALFORMED_OR_UNKNOWN_STATUS")
                         }
                     }

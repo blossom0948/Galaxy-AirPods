@@ -240,6 +240,30 @@ class PerDeviceWearStabilizerTest {
     }
 
     @Test
+    fun mapsObservedDisconnectedSecondaryToOneEarbudInsteadOfDroppingTheFrame() {
+        assertEquals(
+            AirPodsWearState.LEFT_IN_EAR,
+            mapAapWearState(
+                AapEarDetectionSnapshot(
+                    primary = AapEarStatus.IN_EAR,
+                    secondary = AapEarStatus.DISCONNECTED,
+                ),
+                primaryPodIsLeft = true,
+            ),
+        )
+        assertEquals(
+            AirPodsWearState.NONE_IN_EAR,
+            mapAapWearState(
+                AapEarDetectionSnapshot(
+                    primary = AapEarStatus.DISCONNECTED,
+                    secondary = AapEarStatus.DISCONNECTED,
+                ),
+                primaryPodIsLeft = null,
+            ),
+        )
+    }
+
+    @Test
     fun partialAapAndSideSpecificBleAgreeOnOneBudInsteadOfConflict() {
         var now = 7_000L
         val stabilizer = PerDeviceWearStabilizer(

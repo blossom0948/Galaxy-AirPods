@@ -12,8 +12,8 @@ android {
         applicationId = "com.galaxyairpods"
         minSdk = 29
         targetSdk = 35
-        versionCode = 26
-        versionName = "0.4.4"
+        versionCode = 27
+        versionName = "0.4.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
