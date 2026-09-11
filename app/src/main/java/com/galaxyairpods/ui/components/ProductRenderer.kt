@@ -1,9 +1,12 @@
 package com.galaxyairpods.ui.components
 
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
@@ -15,16 +18,21 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.galaxyairpods.R
 import com.galaxyairpods.domain.model.AirPodsModel
 import com.galaxyairpods.domain.model.AirPodsState
 import com.galaxyairpods.domain.model.isMax
@@ -32,11 +40,12 @@ import com.galaxyairpods.domain.model.isPro
 import kotlin.math.min
 
 /**
- * Renders the product as independent vector layers instead of scaling one
- * flat bitmap. The geometry is original artwork: it is not an Apple system
- * screenshot or a third-party asset. Keeping the layers in one Canvas makes
- * the popup light enough for a TYPE_APPLICATION_OVERLAY window while still
- * giving the lid, body, left bud and right bud independent motion channels.
+ * Renders the product as independent layers instead of scaling one flat
+ * bitmap. The verified Pro 2 USB-C artwork uses generated transparent WebP
+ * layers; every other model uses its original model-specific Canvas fallback.
+ * This keeps the popup light enough for a TYPE_APPLICATION_OVERLAY window
+ * while still giving the lid, body, left bud and right bud independent motion
+ * channels.
  */
 @Composable
 fun ProductRenderer(
@@ -47,11 +56,16 @@ fun ProductRenderer(
     leftLift: Float = 0f,
     rightLift: Float = 0f,
     showCase: Boolean = true,
+    reducedMotion: Boolean = false,
 ) {
     val density = LocalDensity.current
     val renderedOpenProgress by animateFloatAsState(
         targetValue = openProgress.coerceIn(0f, 1f),
-        animationSpec = spring(dampingRatio = 0.86f, stiffness = 420f),
+        animationSpec = if (reducedMotion) {
+            snap()
+        } else {
+            spring(dampingRatio = 0.86f, stiffness = 420f)
+        },
         label = "airpods-case-open",
     )
     val outOfCaseLift = with(density) { -52.dp.toPx() }
@@ -65,12 +79,20 @@ fun ProductRenderer(
     )
     val renderedLeftLift by animateFloatAsState(
         targetValue = leftTargetLift,
-        animationSpec = spring(dampingRatio = 0.82f, stiffness = 360f),
+        animationSpec = if (reducedMotion) {
+            snap()
+        } else {
+            spring(dampingRatio = 0.82f, stiffness = 360f)
+        },
         label = "airpods-left-lift",
     )
     val renderedRightLift by animateFloatAsState(
         targetValue = rightTargetLift,
-        animationSpec = spring(dampingRatio = 0.82f, stiffness = 360f),
+        animationSpec = if (reducedMotion) {
+            snap()
+        } else {
+            spring(dampingRatio = 0.82f, stiffness = 360f)
+        },
         label = "airpods-right-lift",
     )
 
@@ -80,21 +102,180 @@ fun ProductRenderer(
             .height(artworkHeight)
             .semantics { contentDescription = state.model.label + " 제품" },
     ) {
-        Canvas(Modifier.fillMaxWidth().height(artworkHeight)) {
-            if (state.model.isMax) {
-                drawMaxHeadphones()
-            } else {
-                drawAirPodsArtwork(
-                    model = state.model,
-                    openProgress = renderedOpenProgress,
-                    leftLift = renderedLeftLift,
-                    rightLift = renderedRightLift,
-                    caseCharging = state.caseCharging == true,
-                    showCase = showCase,
-                )
+        val bitmapArtwork = state.model.bitmapArtwork()
+        if (bitmapArtwork != null) {
+            BitmapAirPodsArtwork(
+                artwork = bitmapArtwork,
+                openProgress = renderedOpenProgress,
+                leftLift = renderedLeftLift,
+                rightLift = renderedRightLift,
+                caseCharging = state.caseCharging == true,
+                showCase = showCase,
+            )
+        } else {
+            Canvas(Modifier.fillMaxWidth().height(artworkHeight)) {
+                if (state.model.isMax) {
+                    drawMaxHeadphones()
+                } else {
+                    drawAirPodsArtwork(
+                        model = state.model,
+                        openProgress = renderedOpenProgress,
+                        leftLift = renderedLeftLift,
+                        rightLift = renderedRightLift,
+                        caseCharging = state.caseCharging == true,
+                        showCase = showCase,
+                    )
+                }
             }
         }
     }
+}
+
+private data class AirPodsBitmapArtwork(
+    val closedCase: Int,
+    val caseBody: Int,
+    val openLid: Int,
+    val leftBud: Int,
+    val rightBud: Int,
+)
+
+private fun AirPodsModel.bitmapArtwork(): AirPodsBitmapArtwork? = when (artworkTechnology()) {
+    AirPodsArtworkTechnology.BITMAP_LAYERS -> AirPodsBitmapArtwork(
+        closedCase = R.drawable.airpods_pro2_lid_closed,
+        caseBody = R.drawable.airpods_pro2_case_body,
+        openLid = R.drawable.airpods_pro2_lid_open,
+        leftBud = R.drawable.airpods_pro2_bud_left,
+        rightBud = R.drawable.airpods_pro2_bud_right,
+    )
+    AirPodsArtworkTechnology.VECTOR_FALLBACK -> null
+}
+
+/**
+ * Uses the generated product render as five aligned transparent layers. The
+ * closed case is crossfaded into the open body/lid rather than being rotated
+ * as a flat bitmap, while each earbud has its own lift and horizontal escape
+ * path. This keeps the motion believable without distorting the rendered
+ * product.
+ */
+@Composable
+private fun BitmapAirPodsArtwork(
+    artwork: AirPodsBitmapArtwork,
+    openProgress: Float,
+    leftLift: Float,
+    rightLift: Float,
+    caseCharging: Boolean,
+    showCase: Boolean,
+) {
+    val density = LocalDensity.current
+    val open = openProgress.coerceIn(0f, 1f)
+    val caseAlpha = if (showCase) 1f else 0f
+    val closedAlpha = caseAlpha * (1f - open)
+    val openAlpha = caseAlpha * open
+    val inCaseThreshold = with(density) { -8.dp.toPx() }
+    val maxLift = with(density) { 52.dp.toPx() }
+    val horizontalEscape = with(density) { 18.dp.toPx() }
+    // The isolated bud renders are intentionally kept at a smaller scale than
+    // the full case canvas.  The source render shows the in-case buds at a
+    // close perspective, so this compensates for that perspective when they
+    // are reassembled over the front-facing case body.
+    val budScale = 0.48f
+    val leftBaseOffset = with(density) { (-35).dp.toPx() }
+    val rightBaseOffset = with(density) { 35.dp.toPx() }
+    val leftInCase = leftLift > inCaseThreshold
+    val rightInCase = rightLift > inCaseThreshold
+    val leftProgress = (-leftLift / maxLift).coerceIn(0f, 1f)
+    val rightProgress = (-rightLift / maxLift).coerceIn(0f, 1f)
+
+    Box(Modifier.fillMaxSize()) {
+        if (showCase) {
+            ArtworkLayer(
+                resourceId = artwork.closedCase,
+                alpha = closedAlpha,
+            )
+            ArtworkLayer(
+                resourceId = artwork.caseBody,
+                alpha = openAlpha,
+                translationY = with(density) { (4f * (1f - open)).dp.toPx() },
+            )
+            ArtworkLayer(
+                resourceId = artwork.openLid,
+                alpha = openAlpha,
+                translationY = with(density) { (-8f * (1f - open)).dp.toPx() },
+                scaleX = 0.98f + 0.02f * open,
+                scaleY = 0.96f + 0.04f * open,
+                transformOrigin = TransformOrigin(0.5f, 0.94f),
+            )
+        }
+
+        ArtworkLayer(
+            resourceId = artwork.leftBud,
+            alpha = if (leftInCase) openAlpha else 1f,
+            translationX = leftBaseOffset - horizontalEscape * leftProgress,
+            translationY = if (leftInCase) with(density) { (-3f * open).dp.toPx() } else leftLift,
+            scaleX = budScale + 0.02f * leftProgress,
+            scaleY = budScale + 0.02f * leftProgress,
+        )
+        ArtworkLayer(
+            resourceId = artwork.rightBud,
+            alpha = if (rightInCase) openAlpha else 1f,
+            translationX = rightBaseOffset + horizontalEscape * rightProgress,
+            translationY = if (rightInCase) with(density) { (-3f * open).dp.toPx() } else rightLift,
+            scaleX = budScale + 0.02f * rightProgress,
+            scaleY = budScale + 0.02f * rightProgress,
+        )
+
+        // The closed-case source contains a neutralized indicator position in
+        // the original render. Cover its static color while closed so a green
+        // light is shown only when fresh case charging evidence exists.
+        if (showCase) {
+            Canvas(Modifier.fillMaxWidth().matchParentSize()) {
+                val indicatorCenter = Offset(x = size.width / 2f, y = size.height * 0.54f)
+                if (closedAlpha > 0.01f) {
+                    drawCircle(
+                        color = Color(0xFFD7DEE7),
+                        radius = with(density) { 4.dp.toPx() },
+                        center = indicatorCenter,
+                        alpha = closedAlpha,
+                    )
+                }
+                if (caseCharging) {
+                    drawCircle(
+                        color = Color(0xFF16C784),
+                        radius = with(density) { 3.dp.toPx() },
+                        center = indicatorCenter,
+                        alpha = openAlpha.coerceAtLeast(closedAlpha),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ArtworkLayer(
+    resourceId: Int,
+    alpha: Float,
+    translationX: Float = 0f,
+    translationY: Float = 0f,
+    scaleX: Float = 1f,
+    scaleY: Float = 1f,
+    transformOrigin: TransformOrigin = TransformOrigin.Center,
+) {
+    Image(
+        painter = painterResource(resourceId),
+        contentDescription = null,
+        contentScale = ContentScale.Fit,
+        modifier = Modifier
+            .fillMaxSize()
+            .graphicsLayer {
+                this.alpha = alpha.coerceIn(0f, 1f)
+                this.translationX = translationX
+                this.translationY = translationY
+                this.scaleX = scaleX
+                this.scaleY = scaleY
+                this.transformOrigin = transformOrigin
+            },
+    )
 }
 
 private const val DESIGN_WIDTH = 360f

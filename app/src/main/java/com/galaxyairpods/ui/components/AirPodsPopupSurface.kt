@@ -269,6 +269,7 @@ fun AirPodsPopupSurface(
                         // During entrance/partial removal the case remains so
                         // the lid-to-bud motion is still understandable.
                         showCase = shouldShowCase(popup),
+                        reducedMotion = reducedMotion,
                     )
                 }
 
