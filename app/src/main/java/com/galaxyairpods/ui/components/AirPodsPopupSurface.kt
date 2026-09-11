@@ -47,6 +47,7 @@ import com.galaxyairpods.domain.model.AirPodsWearState
 import com.galaxyairpods.domain.model.PopupPhase
 import com.galaxyairpods.domain.model.PopupUiState
 import com.galaxyairpods.domain.motion.MotionLabSettings
+import com.galaxyairpods.domain.motion.MotionTokens
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -75,6 +76,7 @@ fun AirPodsPopupSurface(
     var openProgressTarget by remember { mutableStateOf(0f) }
     var leftLiftTarget by remember { mutableStateOf(0f) }
     var rightLiftTarget by remember { mutableStateOf(0f) }
+    var componentLayoutTarget by remember { mutableStateOf(0f) }
     var entrancePopupId by remember { mutableStateOf<Long?>(null) }
     var entranceRunning by remember { mutableStateOf(false) }
 
@@ -99,6 +101,7 @@ fun AirPodsPopupSurface(
             openProgressTarget = 0f
             leftLiftTarget = desiredLeftLift
             rightLiftTarget = desiredRightLift
+            componentLayoutTarget = 0f
             val exitDurationMs = if (reducedMotion) 120L else MotionLabExitMs
             launch {
                 cardY.animateTo(
@@ -147,6 +150,7 @@ fun AirPodsPopupSurface(
             openProgressTarget = if (popup.deviceState.caseOpen == true) 1f else 0f
             leftLiftTarget = desiredLeftLift
             rightLiftTarget = desiredRightLift
+            componentLayoutTarget = 0f
             launch { cardY.animateTo(0f, tween(reducedEntryMs)) }
             launch { cardScale.animateTo(1f, tween(reducedEntryMs)) }
             launch { cardAlpha.animateTo(1f, tween(reducedEntryMs)) }
@@ -175,6 +179,7 @@ fun AirPodsPopupSurface(
         openProgressTarget = 0f
         leftLiftTarget = 0f
         rightLiftTarget = 0f
+        componentLayoutTarget = 0f
 
         launch {
             cardY.animateTo(
@@ -199,19 +204,26 @@ fun AirPodsPopupSurface(
             productScale.animateTo(1f, spring(settings.productDamping, settings.productStiffness))
         }
         launch {
-            delay(((settings.productDelayMs + settings.earbudStaggerMs) / settings.playbackSpeed).toLong())
+            // Wait for the lid to reach its open pose, then lift both earbuds
+            // from the same frame.  The previous stagger made the two buds
+            // look unrelated and also exposed their different source-canvas
+            // sizes more clearly.
+            delay(((settings.productDelayMs + MotionTokens.CaseOpenDurationMs) /
+                settings.playbackSpeed).toLong())
             leftLiftTarget = desiredLeftLift
-        }
-        launch {
-            delay(((settings.productDelayMs + settings.earbudStaggerMs * 2) / settings.playbackSpeed).toLong())
             rightLiftTarget = desiredRightLift
+            delay(((MotionTokens.EarbudMotionDurationMs + MotionTokens.ComponentArrangeDelayMs) /
+                settings.playbackSpeed).toLong())
+            if (popup.deviceState.caseOpen == true && popup.leftRemoved && popup.rightRemoved) {
+                componentLayoutTarget = 1f
+            }
         }
         launch {
             delay((settings.batteryDelayMs / settings.playbackSpeed).toLong())
             onBatteryVisible()
         }
         launch {
-            delay((520L / settings.playbackSpeed).toLong())
+            delay((MotionTokens.PopupEntranceCompleteMs / settings.playbackSpeed).toLong())
             entranceRunning = false
             onIdle()
         }
@@ -236,6 +248,11 @@ fun AirPodsPopupSurface(
             openProgressTarget = if (popup.deviceState.caseOpen == true) 1f else 0f
             leftLiftTarget = desiredLeftLift
             rightLiftTarget = desiredRightLift
+            componentLayoutTarget = if (
+                popup.deviceState.caseOpen == true &&
+                popup.leftRemoved &&
+                popup.rightRemoved
+            ) 1f else 0f
         }
     }
 
@@ -351,6 +368,7 @@ fun AirPodsPopupSurface(
                         openProgress = openProgressTarget,
                         leftLift = leftLiftTarget,
                         rightLift = rightLiftTarget,
+                        componentLayout = componentLayoutTarget,
                         // Once both buds are really out of the open case, the
                         // settled popup focuses on the two independent buds.
                         // During entrance/partial removal the case remains so

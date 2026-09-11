@@ -12,6 +12,17 @@ object MotionTokens {
 
     const val ProductDelayMs = 55L
     const val EarbudStaggerMs = 64L
+    // The real product sequence reads more naturally when the lid has time
+    // to reach its open pose before both earbuds leave the case together.
+    const val CaseOpenDurationMs = 420L
+    const val EarbudMotionDurationMs = 280L
+    const val ComponentArrangeDelayMs = 24L
+    const val ComponentArrangeDurationMs = 360L
+    const val PopupEntranceCompleteMs = ProductDelayMs +
+        CaseOpenDurationMs +
+        EarbudMotionDurationMs +
+        ComponentArrangeDelayMs +
+        ComponentArrangeDurationMs
     const val ProductInitialScale = 0.955f
     const val ProductInitialYOffsetDp = 9f
     const val ProductDamping = 0.86f

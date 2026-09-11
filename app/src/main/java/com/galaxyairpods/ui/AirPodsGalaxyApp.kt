@@ -1,6 +1,7 @@
 package com.galaxyairpods.ui
 
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -62,7 +63,7 @@ fun AirPodsGalaxyApp(viewModel: AppViewModel = viewModel()) {
                 }
             },
         ) { paddingValues ->
-            Box(Modifier.padding(paddingValues)) {
+            Box(Modifier.fillMaxSize().padding(paddingValues)) {
                 when (destination) {
                     AppDestination.HOME -> HomeScreen(
                         state = airPodsState,

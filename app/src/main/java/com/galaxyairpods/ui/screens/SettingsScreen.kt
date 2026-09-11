@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -75,10 +76,12 @@ fun SettingsScreen(
 
     Column(
         modifier = Modifier
+            .fillMaxSize()
             .fillMaxWidth()
             .verticalScroll(rememberScrollState())
             .navigationBarsPadding()
-            .padding(horizontal = 18.dp, vertical = 12.dp),
+            .padding(horizontal = 18.dp, vertical = 12.dp)
+            .padding(bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text("설정", style = MaterialTheme.typography.headlineMedium)
@@ -175,6 +178,11 @@ fun SettingsScreen(
                 }
             }
         }
+
+        // Leave enough scrollable space below the final action so the card
+        // and its button can move fully above the navigation bar on Samsung
+        // devices with a tall gesture/navigation inset.
+        Spacer(Modifier.height(72.dp))
     }
 }
 

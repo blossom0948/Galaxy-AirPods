@@ -6,6 +6,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -41,6 +42,7 @@ import com.galaxyairpods.domain.model.AirPodsState
 import com.galaxyairpods.domain.model.BatterySlot
 import com.galaxyairpods.domain.model.isMax
 import com.galaxyairpods.domain.model.isPro
+import com.galaxyairpods.domain.motion.MotionTokens
 import kotlin.math.min
 
 /**
@@ -62,13 +64,22 @@ fun ProductRenderer(
     // and leave the case after the lid opens.
     leftLift: Float? = null,
     rightLift: Float? = null,
+    componentLayout: Float = 0f,
     showCase: Boolean = true,
     reducedMotion: Boolean = false,
 ) {
     val density = LocalDensity.current
     val caseCharging = state.chargingFor(BatterySlot.CASE) == true
-    val caseMotionDurationMs = if (reducedMotion) 120 else 360
-    val budMotionDurationMs = if (reducedMotion) 120 else 300
+    val caseMotionDurationMs = if (reducedMotion) {
+        120
+    } else {
+        MotionTokens.CaseOpenDurationMs.toInt()
+    }
+    val budMotionDurationMs = if (reducedMotion) {
+        120
+    } else {
+        MotionTokens.EarbudMotionDurationMs.toInt()
+    }
     val renderedOpenProgress by animateFloatAsState(
         targetValue = openProgress.coerceIn(0f, 1f),
         animationSpec = tween(caseMotionDurationMs, easing = FastOutSlowInEasing),
@@ -89,6 +100,18 @@ fun ProductRenderer(
         animationSpec = tween(budMotionDurationMs, easing = FastOutSlowInEasing),
         label = "airpods-right-lift",
     )
+    val renderedComponentLayout by animateFloatAsState(
+        targetValue = componentLayout.coerceIn(0f, 1f),
+        animationSpec = if (reducedMotion) {
+            tween(120, easing = FastOutSlowInEasing)
+        } else {
+            tween(
+                MotionTokens.ComponentArrangeDurationMs.toInt(),
+                easing = FastOutSlowInEasing,
+            )
+        },
+        label = "airpods-component-arrange",
+    )
 
     Box(
         modifier = modifier
@@ -103,6 +126,7 @@ fun ProductRenderer(
                 openProgress = renderedOpenProgress,
                 leftLift = renderedLeftLift,
                 rightLift = renderedRightLift,
+                arrangementProgress = renderedComponentLayout,
                 caseCharging = caseCharging,
                 showCase = showCase,
             )
@@ -157,70 +181,170 @@ private fun BitmapAirPodsArtwork(
     openProgress: Float,
     leftLift: Float,
     rightLift: Float,
+    arrangementProgress: Float,
     caseCharging: Boolean,
     showCase: Boolean,
 ) {
     val density = LocalDensity.current
     val open = openProgress.coerceIn(0f, 1f)
+    val arrangement = arrangementProgress.coerceIn(0f, 1f)
+    val arrangementEased = FastOutSlowInEasing.transform(arrangement)
     val caseAlpha = if (showCase) 1f else 0f
     val closedAlpha = caseAlpha * (1f - open)
     val openAlpha = caseAlpha * open
     val inCaseThreshold = with(density) { -8.dp.toPx() }
     val maxLift = with(density) { 52.dp.toPx() }
     val horizontalEscape = with(density) { 18.dp.toPx() }
-    // The isolated bud renders are intentionally kept at a smaller scale than
-    // the full case canvas.  The source render shows the in-case buds at a
-    // close perspective, so this compensates for that perspective when they
-    // are reassembled over the front-facing case body.
+    // The isolated bud renders share a transparent canvas, but their opaque
+    // artwork does not occupy the same bounds. Normalize the right source
+    // slightly so the physical buds are the same apparent size on screen.
     val budScale = 0.48f
+    val rightBudScaleNormalization = 1.50f
     val leftBaseOffset = with(density) { (-35).dp.toPx() }
-    val rightBaseOffset = with(density) { 35.dp.toPx() }
+    val rightBaseOffset = with(density) { 22.dp.toPx() }
     val leftInCase = leftLift > inCaseThreshold
     val rightInCase = rightLift > inCaseThreshold
     val leftProgress = (-leftLift / maxLift).coerceIn(0f, 1f)
     val rightProgress = (-rightLift / maxLift).coerceIn(0f, 1f)
 
-    Box(
+    BoxWithConstraints(
         modifier = Modifier.fillMaxSize(),
         contentAlignment = Alignment.Center,
     ) {
+        val widthPx = with(density) { maxWidth.toPx() }
+        val gapPx = with(density) { 8.dp.toPx() }
+        val slotWidth = ((widthPx - gapPx * 2f) / 3f).coerceAtLeast(0f)
+        val leftSlotX = slotWidth / 2f
+        val rightSlotX = slotWidth + gapPx + slotWidth / 2f
+        val caseSlotX = (slotWidth + gapPx) * 2f + slotWidth / 2f
+        val centerX = widthPx / 2f
+        val leftSlotDx = leftSlotX - centerX
+        val rightSlotDx = rightSlotX - centerX
+        val caseSlotDx = caseSlotX - centerX
+        val finalComponentY = with(density) { 48.dp.toPx() }
+        val componentCanvasHeight = 92.dp
+        val componentBudScale = 0.62f
+        val componentCaseScale = 0.72f
+        // The right bud source is shifted to the right inside its transparent
+        // canvas. Compensate when it is placed above the middle battery item.
+        val rightArtworkCenterCorrection = with(density) { 15.dp.toPx() }
+
+        // Once both buds finish rising, the hero resolves into the three
+        // battery-aligned component slots. The case takes a short downward
+        // path before travelling to the case slot on the right.
+        val caseDeparturePhase = (arrangement / 0.35f).coerceIn(0f, 1f)
+        val caseReturnPhase = ((arrangement - 0.35f) / 0.65f).coerceIn(0f, 1f)
+        val caseDown = if (arrangement < 0.35f) {
+            caseDeparturePhase
+        } else {
+            1f - caseReturnPhase
+        }
+        val caseHeroX = caseSlotDx * caseReturnPhase
+        val caseHeroY = with(density) { 52.dp.toPx() } * caseDown
+        val finalCaseAlpha = ((arrangement - 0.44f) / 0.56f).coerceIn(0f, 1f)
+        val finalBudAlpha = ((arrangement - 0.28f) / 0.72f).coerceIn(0f, 1f)
+        val initialLeftY = if (leftInCase) {
+            with(density) { (-3f * open).dp.toPx() }
+        } else {
+            leftLift
+        }
+        val initialRightY = if (rightInCase) {
+            with(density) { (-3f * open).dp.toPx() }
+        } else {
+            rightLift
+        }
+        val heroLeftX = leftBaseOffset - horizontalEscape * leftProgress
+        val heroRightX = rightBaseOffset + horizontalEscape * rightProgress
+        val arrangedLeftX = heroLeftX + (leftSlotDx - heroLeftX) * arrangementEased
+        val arrangedRightX = heroRightX +
+            (rightSlotDx - rightArtworkCenterCorrection - heroRightX) * arrangementEased
+        val arrangedLeftY = initialLeftY + (finalComponentY - initialLeftY) * arrangementEased
+        val arrangedRightY = initialRightY + (finalComponentY - initialRightY) * arrangementEased
+
         if (showCase) {
             ArtworkLayer(
                 resourceId = artwork.closedCase,
-                alpha = closedAlpha,
+                alpha = closedAlpha * (1f - arrangementEased),
+                translationX = caseHeroX,
+                translationY = caseHeroY,
             )
             ArtworkLayer(
                 resourceId = artwork.caseBody,
-                alpha = openAlpha,
-                translationY = with(density) { (9f * (1f - open)).dp.toPx() },
+                alpha = openAlpha * (1f - arrangementEased),
+                translationX = caseHeroX,
+                translationY = caseHeroY +
+                    with(density) { (9f * (1f - open)).dp.toPx() },
             )
             ArtworkLayer(
                 resourceId = artwork.openLid,
-                alpha = openAlpha,
+                alpha = openAlpha * (1f - arrangementEased),
+                translationX = caseHeroX,
                 // This layer is already rendered in the open pose. Start it
                 // near the hinge and move it clearly upward while the closed
                 // lid fades out; a tiny scale wobble looked like a jerk.
-                translationY = with(density) { (22f * (1f - open)).dp.toPx() },
+                translationY = caseHeroY +
+                    with(density) { (22f * (1f - open)).dp.toPx() },
                 transformOrigin = TransformOrigin(0.5f, 0.94f),
             )
         }
 
         ArtworkLayer(
             resourceId = artwork.leftBud,
-            alpha = if (leftInCase) openAlpha else 1f,
-            translationX = leftBaseOffset - horizontalEscape * leftProgress,
-            translationY = if (leftInCase) with(density) { (-3f * open).dp.toPx() } else leftLift,
+            alpha = (if (leftInCase) openAlpha else 1f) * (1f - arrangementEased),
+            translationX = arrangedLeftX,
+            translationY = arrangedLeftY,
             scaleX = budScale + 0.02f * leftProgress,
             scaleY = budScale + 0.02f * leftProgress,
         )
         ArtworkLayer(
             resourceId = artwork.rightBud,
-            alpha = if (rightInCase) openAlpha else 1f,
-            translationX = rightBaseOffset + horizontalEscape * rightProgress,
-            translationY = if (rightInCase) with(density) { (-3f * open).dp.toPx() } else rightLift,
-            scaleX = budScale + 0.02f * rightProgress,
-            scaleY = budScale + 0.02f * rightProgress,
+            alpha = (if (rightInCase) openAlpha else 1f) * (1f - arrangementEased),
+            translationX = arrangedRightX,
+            translationY = arrangedRightY,
+            scaleX = (budScale + 0.02f * rightProgress) * rightBudScaleNormalization,
+            scaleY = (budScale + 0.02f * rightProgress) * rightBudScaleNormalization,
         )
+
+        if (showCase && finalCaseAlpha > 0f) {
+            ArtworkLayer(
+                resourceId = artwork.caseBody,
+                alpha = finalCaseAlpha,
+                canvasHeight = componentCanvasHeight,
+                translationX = caseSlotDx,
+                translationY = finalComponentY,
+                scaleX = componentCaseScale,
+                scaleY = componentCaseScale,
+            )
+            ArtworkLayer(
+                resourceId = artwork.openLid,
+                alpha = finalCaseAlpha,
+                canvasHeight = componentCanvasHeight,
+                translationX = caseSlotDx,
+                translationY = finalComponentY,
+                scaleX = componentCaseScale,
+                scaleY = componentCaseScale,
+            )
+        }
+        if (finalBudAlpha > 0f) {
+            ArtworkLayer(
+                resourceId = artwork.leftBud,
+                alpha = finalBudAlpha,
+                canvasHeight = componentCanvasHeight,
+                translationX = leftSlotDx,
+                translationY = finalComponentY,
+                scaleX = componentBudScale,
+                scaleY = componentBudScale,
+            )
+            ArtworkLayer(
+                resourceId = artwork.rightBud,
+                alpha = finalBudAlpha,
+                canvasHeight = componentCanvasHeight,
+                translationX = rightSlotDx - rightArtworkCenterCorrection,
+                translationY = finalComponentY,
+                scaleX = componentBudScale * rightBudScaleNormalization,
+                scaleY = componentBudScale * rightBudScaleNormalization,
+            )
+        }
 
         // The closed-case source contains a neutralized indicator position in
         // the original render. Cover its static color while closed so a green
@@ -244,6 +368,17 @@ private fun BitmapAirPodsArtwork(
                         alpha = openAlpha.coerceAtLeast(closedAlpha),
                     )
                 }
+                if (caseCharging && finalCaseAlpha > 0f) {
+                    drawCircle(
+                        color = Color(0xFF16C784),
+                        radius = with(density) { 2.2.dp.toPx() },
+                        center = Offset(
+                            x = centerX + caseSlotDx,
+                            y = size.height / 2f + finalComponentY,
+                        ),
+                        alpha = finalCaseAlpha,
+                    )
+                }
             }
         }
     }
@@ -258,6 +393,7 @@ private fun ArtworkLayer(
     scaleX: Float = 1f,
     scaleY: Float = 1f,
     transformOrigin: TransformOrigin = TransformOrigin.Center,
+    canvasHeight: Dp? = null,
 ) {
     Image(
         painter = painterResource(resourceId),
@@ -267,7 +403,7 @@ private fun ArtworkLayer(
         // otherwise makes the real product look unnaturally narrow.
         contentScale = ContentScale.FillBounds,
         modifier = Modifier
-            .fillMaxHeight()
+            .then(if (canvasHeight == null) Modifier.fillMaxHeight() else Modifier.height(canvasHeight))
             .aspectRatio(BITMAP_CANVAS_ASPECT)
             .graphicsLayer {
                 this.alpha = alpha.coerceIn(0f, 1f)

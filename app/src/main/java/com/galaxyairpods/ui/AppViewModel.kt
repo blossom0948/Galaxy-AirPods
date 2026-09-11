@@ -17,6 +17,9 @@ import com.galaxyairpods.domain.motion.MotionLabSettings
 import com.galaxyairpods.permissions.PermissionManager
 import com.galaxyairpods.service.AirPodsMonitorService
 import com.galaxyairpods.service.AirPodsOverlayService
+import com.galaxyairpods.service.EXTRA_CASE_OPEN
+import com.galaxyairpods.service.EXTRA_LEFT_IN_CASE
+import com.galaxyairpods.service.EXTRA_RIGHT_IN_CASE
 import com.galaxyairpods.update.UpdateManager
 import com.galaxyairpods.update.UpdateInfo
 import com.galaxyairpods.update.UpdateState
@@ -234,7 +237,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun testOverlay() {
         val context = getApplication<Application>()
         if (Settings.canDrawOverlays(context)) {
-            context.startService(Intent(context, AirPodsOverlayService::class.java))
+            // The test action must exercise the same open-case timeline as a
+            // real lid event. The persisted snapshot is often closed because
+            // the last battery sample arrived after the lid was closed; using
+            // that snapshot here made the test show only a static closed case.
+            context.startService(
+                Intent(context, AirPodsOverlayService::class.java).apply {
+                    putExtra(EXTRA_CASE_OPEN, true)
+                    putExtra(EXTRA_LEFT_IN_CASE, false)
+                    putExtra(EXTRA_RIGHT_IN_CASE, false)
+                },
+            )
         }
     }
 

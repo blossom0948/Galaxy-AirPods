@@ -3,6 +3,7 @@ package com.galaxyairpods.service
 import android.content.Intent
 import android.graphics.PixelFormat
 import android.os.IBinder
+import android.os.SystemClock
 import android.provider.Settings
 import android.view.Gravity
 import android.view.WindowManager
@@ -110,6 +111,12 @@ class AirPodsOverlayService : LifecycleService() {
             stateJob = launch {
                 var previousState: AirPodsState? = state
                 var firstLiveEmission = true
+                val triggerHoldUntilElapsedMs = SystemClock.elapsedRealtime() +
+                    OVERLAY_TRIGGER_HOLD_MS
+                val triggerBaselineTimestamp = maxOf(
+                    state.lastSeenAt ?: 0L,
+                    state.batteryCapturedAt ?: 0L,
+                )
                 combine(dataStore.latestDisplayState, dataStore.wearDetectionEnabled) { liveState, wearEnabled ->
                     liveState?.let { if (wearEnabled) it else it.withoutWearDetection() }
                 }.collect { liveState ->
@@ -117,7 +124,22 @@ class AirPodsOverlayService : LifecycleService() {
                         // The first DataStore emission can race the monitor's
                         // saveState call. Apply the event snapshot once so a
                         // real lid-open event cannot begin with stale false.
-                        val effectiveState = if (firstLiveEmission) {
+                        // Keep an explicit trigger alive for the short entrance
+                        // window when the store still emits the same stale
+                        // closed snapshot. Without this, the popup immediately
+                        // retargets from OPEN back to CLOSED and the user only
+                        // sees the card's small entrance movement.
+                        val liveTimestamp = maxOf(
+                            liveState.lastSeenAt ?: 0L,
+                            liveState.batteryCapturedAt ?: 0L,
+                        )
+                        val triggerStillWins =
+                            (trigger.caseOpen != null ||
+                                trigger.leftInCase != null ||
+                                trigger.rightInCase != null) &&
+                                SystemClock.elapsedRealtime() < triggerHoldUntilElapsedMs &&
+                                liveTimestamp <= triggerBaselineTimestamp
+                        val effectiveState = if (firstLiveEmission || triggerStillWins) {
                             liveState.withOverlayTrigger(trigger)
                         } else {
                             liveState
@@ -210,6 +232,8 @@ class AirPodsOverlayService : LifecycleService() {
 internal const val EXTRA_CASE_OPEN = "com.galaxyairpods.overlay.CASE_OPEN"
 internal const val EXTRA_LEFT_IN_CASE = "com.galaxyairpods.overlay.LEFT_IN_CASE"
 internal const val EXTRA_RIGHT_IN_CASE = "com.galaxyairpods.overlay.RIGHT_IN_CASE"
+
+private const val OVERLAY_TRIGGER_HOLD_MS = 1_200L
 
 private fun Intent.booleanExtraOrNull(key: String): Boolean? =
     if (hasExtra(key)) getBooleanExtra(key, false) else null
