@@ -20,7 +20,7 @@ enum class PopupPhase {
 
 sealed interface PopupEvent {
     data class CaseOpened(val state: AirPodsState) : PopupEvent
-    data object CaseClosed : PopupEvent
+    data class CaseClosed(val state: AirPodsState) : PopupEvent
     data object Connected : PopupEvent
     data class BatteryUpdated(val state: AirPodsState) : PopupEvent
     data object LeftRemoved : PopupEvent

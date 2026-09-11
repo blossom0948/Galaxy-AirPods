@@ -6,12 +6,15 @@ import androidx.compose.animation.core.spring
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -35,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import com.galaxyairpods.R
 import com.galaxyairpods.domain.model.AirPodsModel
 import com.galaxyairpods.domain.model.AirPodsState
+import com.galaxyairpods.domain.model.BatterySlot
 import com.galaxyairpods.domain.model.isMax
 import com.galaxyairpods.domain.model.isPro
 import kotlin.math.min
@@ -59,6 +63,7 @@ fun ProductRenderer(
     reducedMotion: Boolean = false,
 ) {
     val density = LocalDensity.current
+    val caseCharging = state.chargingFor(BatterySlot.CASE) == true
     val renderedOpenProgress by animateFloatAsState(
         targetValue = openProgress.coerceIn(0f, 1f),
         animationSpec = if (reducedMotion) {
@@ -109,7 +114,7 @@ fun ProductRenderer(
                 openProgress = renderedOpenProgress,
                 leftLift = renderedLeftLift,
                 rightLift = renderedRightLift,
-                caseCharging = state.caseCharging == true,
+                caseCharging = caseCharging,
                 showCase = showCase,
             )
         } else {
@@ -122,7 +127,7 @@ fun ProductRenderer(
                         openProgress = renderedOpenProgress,
                         leftLift = renderedLeftLift,
                         rightLift = renderedRightLift,
-                        caseCharging = state.caseCharging == true,
+                        caseCharging = caseCharging,
                         showCase = showCase,
                     )
                 }
@@ -186,7 +191,10 @@ private fun BitmapAirPodsArtwork(
     val leftProgress = (-leftLift / maxLift).coerceIn(0f, 1f)
     val rightProgress = (-rightLift / maxLift).coerceIn(0f, 1f)
 
-    Box(Modifier.fillMaxSize()) {
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center,
+    ) {
         if (showCase) {
             ArtworkLayer(
                 resourceId = artwork.closedCase,
@@ -264,9 +272,13 @@ private fun ArtworkLayer(
     Image(
         painter = painterResource(resourceId),
         contentDescription = null,
-        contentScale = ContentScale.Fit,
+        // The verified bitmap layers share one 768x686 transparent canvas.
+        // Keep that canvas ratio intact; fitting it into the wide popup row
+        // otherwise makes the real product look unnaturally narrow.
+        contentScale = ContentScale.FillBounds,
         modifier = Modifier
-            .fillMaxSize()
+            .fillMaxHeight()
+            .aspectRatio(BITMAP_CANVAS_ASPECT)
             .graphicsLayer {
                 this.alpha = alpha.coerceIn(0f, 1f)
                 this.translationX = translationX
@@ -277,6 +289,8 @@ private fun ArtworkLayer(
             },
     )
 }
+
+private const val BITMAP_CANVAS_ASPECT = 768f / 686f
 
 private const val DESIGN_WIDTH = 360f
 private const val DESIGN_HEIGHT = 190f

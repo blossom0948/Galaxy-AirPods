@@ -22,6 +22,7 @@ import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import com.galaxyairpods.data.persistence.AirPodsDataStore
 import com.galaxyairpods.design.AirPodsGalaxyTheme
+import com.galaxyairpods.domain.model.AirPodsState
 import com.galaxyairpods.domain.model.PopupEvent
 import com.galaxyairpods.domain.model.PopupUiState
 import com.galaxyairpods.domain.motion.MotionLabSettings
@@ -95,11 +96,20 @@ class AirPodsOverlayService : LifecycleService() {
 
             stateJob?.cancel()
             stateJob = launch {
+                var previousState: AirPodsState? = state
                 combine(dataStore.latestDisplayState, dataStore.wearDetectionEnabled) { liveState, wearEnabled ->
                     liveState?.let { if (wearEnabled) it else it.withoutWearDetection() }
                 }.collect { liveState ->
                     if (liveState != null) {
-                        popupController.dispatch(PopupEvent.BatteryUpdated(liveState))
+                        val previous = previousState
+                        when {
+                            previous?.caseOpen != true && liveState.caseOpen == true ->
+                                popupController.dispatch(PopupEvent.CaseOpened(liveState))
+                            previous?.caseOpen == true && liveState.caseOpen == false ->
+                                popupController.dispatch(PopupEvent.CaseClosed(liveState))
+                            else -> popupController.dispatch(PopupEvent.BatteryUpdated(liveState))
+                        }
+                        previousState = liveState
                     }
                 }
             }

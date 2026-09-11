@@ -24,24 +24,24 @@ class PopupMotionController {
         _state.update { current ->
             when (event) {
                 is PopupEvent.CaseOpened -> current.copy(
-                    phase = if (current.phase == PopupPhase.EXITING) {
-                        PopupPhase.ENTERING
-                    } else {
-                        PopupPhase.ENTERING
-                    },
+                    phase = PopupPhase.ENTERING,
                     deviceState = event.state,
                     eventId = current.eventId + 1,
                     animationId = current.animationId + 1,
+                    leftRemoved = event.state.leftInCase == false,
+                    rightRemoved = event.state.rightInCase == false,
                     errorMessage = null,
                 )
 
-                PopupEvent.CaseClosed -> current.copy(
+                is PopupEvent.CaseClosed -> current.copy(
                     phase = if (current.phase == PopupPhase.HIDDEN) {
                         PopupPhase.HIDDEN
                     } else {
                         PopupPhase.EXITING
                     },
-                    deviceState = current.deviceState.copy(caseOpen = false),
+                    deviceState = event.state.copy(caseOpen = false),
+                    leftRemoved = event.state.leftInCase == false,
+                    rightRemoved = event.state.rightInCase == false,
                     eventId = current.eventId + 1,
                 )
 
@@ -66,16 +66,24 @@ class PopupMotionController {
                     animationId = current.animationId + 1,
                 )
 
-                is PopupEvent.BatteryUpdated -> current.copy(
-                    phase = when (current.phase) {
-                        PopupPhase.HIDDEN -> PopupPhase.HIDDEN
-                        else -> PopupPhase.UPDATED
-                    },
-                    deviceState = event.state,
-                    leftRemoved = event.state.leftInCase?.not() ?: current.leftRemoved,
-                    rightRemoved = event.state.rightInCase?.not() ?: current.rightRemoved,
-                    eventId = current.eventId + 1,
-                )
+                is PopupEvent.BatteryUpdated -> {
+                    // A close event owns the exit animation. Telemetry can
+                    // still refresh its content during the short exit window,
+                    // but must not turn EXITING back into UPDATED or restart
+                    // the animation on every battery sample.
+                    val isExiting = current.phase == PopupPhase.EXITING
+                    current.copy(
+                        phase = when {
+                            current.phase == PopupPhase.HIDDEN -> PopupPhase.HIDDEN
+                            isExiting -> PopupPhase.EXITING
+                            else -> PopupPhase.UPDATED
+                        },
+                        deviceState = event.state,
+                        leftRemoved = event.state.leftInCase?.not() ?: current.leftRemoved,
+                        rightRemoved = event.state.rightInCase?.not() ?: current.rightRemoved,
+                        eventId = if (isExiting) current.eventId else current.eventId + 1,
+                    )
+                }
 
                 PopupEvent.LeftRemoved -> current.copy(
                     phase = keepVisiblePhase(current.phase),

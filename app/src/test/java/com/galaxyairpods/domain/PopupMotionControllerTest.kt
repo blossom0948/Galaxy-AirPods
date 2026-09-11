@@ -21,10 +21,28 @@ class PopupMotionControllerTest {
     }
 
     @Test
+    fun caseOpenedStartsNewMotionAndKeepsPerBudRemoval() {
+        val controller = PopupMotionController()
+        controller.show(liveState(caseOpen = false))
+        val previousAnimationId = controller.state.value.animationId
+
+        controller.dispatch(
+            PopupEvent.CaseOpened(
+                liveState(caseOpen = true).copy(leftInCase = false, rightInCase = true),
+            ),
+        )
+
+        assertEquals(previousAnimationId + 1, controller.state.value.animationId)
+        assertEquals(true, controller.state.value.leftRemoved)
+        assertEquals(false, controller.state.value.rightRemoved)
+        assertEquals(PopupPhase.ENTERING, controller.state.value.phase)
+    }
+
+    @Test
     fun closeEntersExitWithoutSnappingHidden() {
         val controller = PopupMotionController()
         controller.show(liveState(caseOpen = true))
-        controller.dispatch(PopupEvent.CaseClosed)
+        controller.dispatch(PopupEvent.CaseClosed(liveState(caseOpen = false)))
 
         assertEquals(PopupPhase.EXITING, controller.state.value.phase)
     }
@@ -60,10 +78,29 @@ class PopupMotionControllerTest {
     fun caseClosedCarriesClosedVisualStateIntoExit() {
         val controller = PopupMotionController()
         controller.show(liveState(caseOpen = true))
-        controller.dispatch(PopupEvent.CaseClosed)
+        controller.dispatch(PopupEvent.CaseClosed(liveState(caseOpen = false)))
 
         assertEquals(PopupPhase.EXITING, controller.state.value.phase)
         assertEquals(false, controller.state.value.deviceState.caseOpen)
+        assertEquals(80, controller.state.value.deviceState.leftBattery)
+    }
+
+    @Test
+    fun batteryUpdateDuringExitDoesNotCancelCloseAnimation() {
+        val controller = PopupMotionController()
+        controller.show(liveState(caseOpen = true))
+        controller.dispatch(PopupEvent.CaseClosed(liveState(caseOpen = false)))
+        val exitEventId = controller.state.value.eventId
+
+        controller.dispatch(
+            PopupEvent.BatteryUpdated(
+                liveState(caseOpen = false).copy(leftBattery = 79),
+            ),
+        )
+
+        assertEquals(PopupPhase.EXITING, controller.state.value.phase)
+        assertEquals(exitEventId, controller.state.value.eventId)
+        assertEquals(79, controller.state.value.deviceState.leftBattery)
     }
 }
 

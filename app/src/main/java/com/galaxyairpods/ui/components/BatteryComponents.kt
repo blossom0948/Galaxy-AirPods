@@ -1,6 +1,8 @@
 package com.galaxyairpods.ui.components
 
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
@@ -39,6 +41,7 @@ fun BatteryGrid(
     modifier: Modifier = Modifier,
     reveal: Boolean = true,
     staggerMs: Long = 35L,
+    reducedMotion: Boolean = false,
 ) {
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) {
@@ -61,6 +64,7 @@ fun BatteryGrid(
                 confidence = state.confidence,
                 reveal = reveal,
                 revealDelayMs = 0L,
+                reducedMotion = reducedMotion,
                 modifier = Modifier.weight(1f),
             )
         } else {
@@ -72,6 +76,7 @@ fun BatteryGrid(
                 confidence = state.confidence,
                 reveal = reveal,
                 revealDelayMs = 0L,
+                reducedMotion = reducedMotion,
                 modifier = Modifier.weight(1f),
             )
             BatteryItem(
@@ -82,6 +87,7 @@ fun BatteryGrid(
                 confidence = state.confidence,
                 reveal = reveal,
                 revealDelayMs = staggerMs,
+                reducedMotion = reducedMotion,
                 modifier = Modifier.weight(1f),
             )
             BatteryItem(
@@ -92,6 +98,7 @@ fun BatteryGrid(
                 confidence = state.confidence,
                 reveal = reveal,
                 revealDelayMs = staggerMs * 2,
+                reducedMotion = reducedMotion,
                 modifier = Modifier.weight(1f),
             )
         }
@@ -107,13 +114,14 @@ fun BatteryItem(
     confidence: DataConfidence,
     reveal: Boolean,
     revealDelayMs: Long,
+    reducedMotion: Boolean = false,
     modifier: Modifier = Modifier,
     labelOverride: String? = null,
 ) {
     var itemVisible by remember { mutableStateOf(false) }
-    LaunchedEffect(reveal, revealDelayMs) {
+    LaunchedEffect(reveal, revealDelayMs, reducedMotion) {
         if (reveal) {
-            delay(revealDelayMs)
+            if (!reducedMotion) delay(revealDelayMs)
             itemVisible = true
         } else {
             itemVisible = false
@@ -122,12 +130,12 @@ fun BatteryItem(
 
     val alpha by animateFloatAsState(
         targetValue = if (itemVisible) 1f else 0f,
-        animationSpec = tween(160),
+        animationSpec = if (reducedMotion) snap() else tween(160),
         label = "${slot.name}-alpha",
     )
     val progress by animateFloatAsState(
         targetValue = (battery ?: 0).coerceIn(0, 100) / 100f,
-        animationSpec = tween(520),
+        animationSpec = if (reducedMotion) snap() else tween(520),
         label = "${slot.name}-ring",
     )
     val accent = when {
@@ -156,11 +164,17 @@ fun BatteryItem(
             )
             Spacer(Modifier.height(5.dp))
             Text(labelOverride ?: slot.label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha))
-            Text(
-                text = battery?.let { "$it%" } ?: "--",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha),
-            )
+            Crossfade(
+                targetState = battery?.let { "$it%" } ?: "--",
+                animationSpec = if (reducedMotion || battery == null) snap() else tween(210),
+                label = "${slot.name}-value",
+            ) { valueLabel ->
+                Text(
+                    text = valueLabel,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha),
+                )
+            }
             if (charging == true) {
                 Text("충전 중", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary.copy(alpha = alpha))
             } else if (chargingUnknown && battery != null) {
