@@ -40,6 +40,31 @@ class PopupMotionControllerTest {
         assertEquals(animationId, controller.state.value.animationId)
         assertEquals(PopupPhase.UPDATED, controller.state.value.phase)
     }
+
+    @Test
+    fun batteryUpdateSynchronizesBudRemovalFlags() {
+        val controller = PopupMotionController()
+        controller.show(liveState(caseOpen = true))
+
+        controller.dispatch(
+            PopupEvent.BatteryUpdated(
+                liveState(caseOpen = true).copy(leftInCase = false, rightInCase = true),
+            ),
+        )
+
+        assertEquals(true, controller.state.value.leftRemoved)
+        assertEquals(false, controller.state.value.rightRemoved)
+    }
+
+    @Test
+    fun caseClosedCarriesClosedVisualStateIntoExit() {
+        val controller = PopupMotionController()
+        controller.show(liveState(caseOpen = true))
+        controller.dispatch(PopupEvent.CaseClosed)
+
+        assertEquals(PopupPhase.EXITING, controller.state.value.phase)
+        assertEquals(false, controller.state.value.deviceState.caseOpen)
+    }
 }
 
 private fun liveState(caseOpen: Boolean? = null) = AirPodsState(

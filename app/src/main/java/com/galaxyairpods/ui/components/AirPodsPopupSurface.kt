@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -68,20 +69,30 @@ fun AirPodsPopupSurface(
     val productY = remember { Animatable(9f) }
     val productScale = remember { Animatable(0.955f) }
     val productAlpha = remember { Animatable(0f) }
-    val openProgress = remember { Animatable(0f) }
     val dragOffset = remember { Animatable(0f) }
+    var openProgressTarget by remember { mutableStateOf(0f) }
+    var leftLiftTarget by remember { mutableStateOf(0f) }
+    var rightLiftTarget by remember { mutableStateOf(0f) }
+    var lastMotionPopupId by remember { mutableStateOf(Long.MIN_VALUE) }
+
+    val desiredLeftLift = if (popup.leftRemoved) {
+        with(density) { -18.dp.toPx() }
+    } else {
+        0f
+    }
+    val desiredRightLift = if (popup.rightRemoved) {
+        with(density) { -18.dp.toPx() }
+    } else {
+        0f
+    }
 
     // Phase markers such as SHOWING_BATTERY/IDLE_VISIBLE must not restart the
     // surface animation. Only a new semantic event re-targets the channels.
     val animationKey = if (popup.phase == PopupPhase.EXITING) popup.eventId else popup.animationId
     LaunchedEffect(animationKey, reducedMotion) {
-        // Battery samples update content only. They must not restart the card
-        // entrance animation or make the popup jump under the user's finger.
-        if (popup.phase == PopupPhase.UPDATED ||
-            popup.phase == PopupPhase.SHOWING_BATTERY ||
-            popup.phase == PopupPhase.IDLE_VISIBLE ||
-            popup.phase == PopupPhase.DRAGGING
-        ) return@LaunchedEffect
+        // Battery samples do not change animationKey, so this effect is not
+        // restarted by ordinary telemetry. If the first state arrives as
+        // UPDATED before composition, the animation must still run.
         if (reducedMotion) {
             if (popup.phase == PopupPhase.EXITING) {
                 cardAlpha.snapTo(0f)
@@ -95,7 +106,6 @@ fun AirPodsPopupSurface(
                 productY.snapTo(0f)
                 productScale.snapTo(1f)
                 productAlpha.snapTo(1f)
-                openProgress.snapTo(if (popup.deviceState.caseOpen == true) 1f else 0f)
                 onBatteryVisible()
             }
             return@LaunchedEffect
@@ -130,15 +140,12 @@ fun AirPodsPopupSurface(
 
         launch {
             delay((settings.productDelayMs / settings.playbackSpeed).toLong())
+            openProgressTarget = if (popup.deviceState.caseOpen == true) 1f else 0f
+            leftLiftTarget = desiredLeftLift
+            rightLiftTarget = desiredRightLift
             productAlpha.animateTo(1f, spring(dampingRatio = 1f, stiffness = 700f))
             productY.animateTo(0f, spring(settings.productDamping, settings.productStiffness))
             productScale.animateTo(1f, spring(settings.productDamping, settings.productStiffness))
-        }
-        launch {
-            openProgress.animateTo(
-                if (popup.deviceState.caseOpen == true) 1f else 0f,
-                spring(dampingRatio = 0.94f, stiffness = 330f),
-            )
         }
         launch {
             delay((settings.batteryDelayMs / settings.playbackSpeed).toLong())
@@ -147,6 +154,34 @@ fun AirPodsPopupSurface(
         launch {
             delay((520L / settings.playbackSpeed).toLong())
             onIdle()
+        }
+    }
+
+    // The overlay is often created after the Bluetooth event already says
+    // caseOpen=true. Keep the first visual target closed so ProductRenderer's
+    // own spring has a real 0 -> 1 transition to render. Later telemetry can
+    // retarget the same channels without replaying the whole card entrance.
+    LaunchedEffect(
+        popup.animationId,
+        popup.deviceState.caseOpen,
+        popup.leftRemoved,
+        popup.rightRemoved,
+        popup.deviceState.leftInCase,
+        popup.deviceState.rightInCase,
+        reducedMotion,
+    ) {
+        val newPopup = lastMotionPopupId != popup.animationId
+        if (newPopup) {
+            lastMotionPopupId = popup.animationId
+            openProgressTarget = 0f
+            leftLiftTarget = 0f
+            rightLiftTarget = 0f
+            return@LaunchedEffect
+        }
+        if (popup.phase != PopupPhase.EXITING) {
+            openProgressTarget = if (popup.deviceState.caseOpen == true) 1f else 0f
+            leftLiftTarget = desiredLeftLift
+            rightLiftTarget = desiredRightLift
         }
     }
 
@@ -160,8 +195,6 @@ fun AirPodsPopupSurface(
     }
 
     val scrim by animateFloatAsState(scrimAlpha.value, label = "popup-scrim")
-    val leftLift = if (popup.leftRemoved) with(density) { -18.dp.toPx() } else 0f
-    val rightLift = if (popup.rightRemoved) with(density) { -18.dp.toPx() } else 0f
     val tracker = remember { VelocityTracker() }
 
     Box(
@@ -261,9 +294,9 @@ fun AirPodsPopupSurface(
                     ProductRenderer(
                         state = popup.deviceState,
                         artworkHeight = 142.dp,
-                        openProgress = openProgress.value,
-                        leftLift = leftLift,
-                        rightLift = rightLift,
+                        openProgress = openProgressTarget,
+                        leftLift = leftLiftTarget,
+                        rightLift = rightLiftTarget,
                         // Once both buds are really out of the open case, the
                         // settled popup focuses on the two independent buds.
                         // During entrance/partial removal the case remains so
@@ -321,17 +354,16 @@ private fun statusText(popup: PopupUiState): String = when (popup.phase) {
 
 private const val MotionLabExitMs = 220L
 
-private fun shouldShowCase(popup: PopupUiState): Boolean = !(
-    popup.deviceState.caseOpen == true &&
-        popup.deviceState.leftInCase == false &&
-        popup.deviceState.rightInCase == false &&
+private fun shouldShowCase(popup: PopupUiState): Boolean =
+    popup.deviceState.caseOpen != false ||
+        popup.deviceState.leftInCase != false ||
+        popup.deviceState.rightInCase != false ||
         popup.phase in setOf(
+            PopupPhase.ENTERING,
+            PopupPhase.DETECTED,
+            PopupPhase.SHOWING_DEVICE,
             PopupPhase.SHOWING_BATTERY,
-            PopupPhase.UPDATED,
-            PopupPhase.IDLE_VISIBLE,
-            PopupPhase.DRAGGING,
         )
-    )
 
 private fun com.galaxyairpods.domain.model.AirPodsState.batterySourceLabel(): String = when (batterySource) {
     "AAP_CLASSIC_EXACT" -> "AAP · 정밀 배터리"

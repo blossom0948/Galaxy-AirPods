@@ -35,7 +35,16 @@ class PopupMotionController {
                     errorMessage = null,
                 )
 
-                PopupEvent.CaseClosed,
+                PopupEvent.CaseClosed -> current.copy(
+                    phase = if (current.phase == PopupPhase.HIDDEN) {
+                        PopupPhase.HIDDEN
+                    } else {
+                        PopupPhase.EXITING
+                    },
+                    deviceState = current.deviceState.copy(caseOpen = false),
+                    eventId = current.eventId + 1,
+                )
+
                 PopupEvent.UserDismiss,
                 PopupEvent.Timeout,
                 -> current.copy(
@@ -63,6 +72,8 @@ class PopupMotionController {
                         else -> PopupPhase.UPDATED
                     },
                     deviceState = event.state,
+                    leftRemoved = event.state.leftInCase?.not() ?: current.leftRemoved,
+                    rightRemoved = event.state.rightInCase?.not() ?: current.rightRemoved,
                     eventId = current.eventId + 1,
                 )
 
