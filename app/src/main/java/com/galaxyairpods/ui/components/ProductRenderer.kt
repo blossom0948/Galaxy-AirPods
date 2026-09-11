@@ -57,8 +57,11 @@ fun ProductRenderer(
     modifier: Modifier = Modifier,
     artworkHeight: Dp = 188.dp,
     openProgress: Float = if (state.caseOpen == true) 1f else 0f,
-    leftLift: Float = 0f,
-    rightLift: Float = 0f,
+    // Null means “derive the settled position from the live state”. Popup
+    // callers pass an explicit animated target so a bud can begin in-case
+    // and leave the case after the lid opens.
+    leftLift: Float? = null,
+    rightLift: Float? = null,
     showCase: Boolean = true,
     reducedMotion: Boolean = false,
 ) {
@@ -74,14 +77,10 @@ fun ProductRenderer(
         label = "airpods-case-open",
     )
     val outOfCaseLift = with(density) { -52.dp.toPx() }
-    val leftTargetLift = minOf(
-        leftLift,
-        if (state.leftInCase == false) outOfCaseLift else 0f,
-    )
-    val rightTargetLift = minOf(
-        rightLift,
-        if (state.rightInCase == false) outOfCaseLift else 0f,
-    )
+    val settledLeftLift = if (state.leftInCase == false) outOfCaseLift else 0f
+    val settledRightLift = if (state.rightInCase == false) outOfCaseLift else 0f
+    val leftTargetLift = (leftLift ?: settledLeftLift).coerceIn(outOfCaseLift, 0f)
+    val rightTargetLift = (rightLift ?: settledRightLift).coerceIn(outOfCaseLift, 0f)
     val renderedLeftLift by animateFloatAsState(
         targetValue = leftTargetLift,
         animationSpec = if (reducedMotion) {

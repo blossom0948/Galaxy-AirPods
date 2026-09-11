@@ -4,6 +4,7 @@ import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Box
@@ -98,15 +99,36 @@ fun AirPodsPopupSurface(
             openProgressTarget = 0f
             leftLiftTarget = desiredLeftLift
             rightLiftTarget = desiredRightLift
+            val exitDurationMs = if (reducedMotion) 120L else MotionLabExitMs
             launch {
-                cardY.animateTo(settings.exitY, spring(dampingRatio = 0.96f, stiffness = 520f))
+                cardY.animateTo(
+                    settings.exitY,
+                    if (reducedMotion) tween(exitDurationMs.toInt())
+                    else spring(dampingRatio = 0.96f, stiffness = 520f),
+                )
             }
             launch {
-                cardScale.animateTo(settings.exitScale, spring(dampingRatio = 0.98f, stiffness = 520f))
+                cardScale.animateTo(
+                    settings.exitScale,
+                    if (reducedMotion) tween(exitDurationMs.toInt())
+                    else spring(dampingRatio = 0.98f, stiffness = 520f),
+                )
             }
-            launch { cardAlpha.animateTo(0f, spring(dampingRatio = 1f, stiffness = 650f)) }
-            launch { scrimAlpha.animateTo(0f, spring(dampingRatio = 1f, stiffness = 700f)) }
-            delay((MotionLabExitMs / settings.playbackSpeed).toLong())
+            launch {
+                cardAlpha.animateTo(
+                    0f,
+                    if (reducedMotion) tween(exitDurationMs.toInt())
+                    else spring(dampingRatio = 1f, stiffness = 650f),
+                )
+            }
+            launch {
+                scrimAlpha.animateTo(
+                    0f,
+                    if (reducedMotion) tween(exitDurationMs.toInt())
+                    else spring(dampingRatio = 1f, stiffness = 700f),
+                )
+            }
+            delay((exitDurationMs / settings.playbackSpeed).toLong())
             onHide()
             return@LaunchedEffect
         }
@@ -115,16 +137,24 @@ fun AirPodsPopupSurface(
         entranceRunning = true
 
         if (reducedMotion) {
-            cardY.snapTo(0f)
-            cardScale.snapTo(1f)
-            cardAlpha.snapTo(1f)
-            scrimAlpha.snapTo(settings.scrimAlpha)
-            productY.snapTo(0f)
-            productScale.snapTo(1f)
-            productAlpha.snapTo(1f)
+            // Reduced motion still gets a short, observable fade/crossfade.
+            // Snapping every channel made the popup look broken on devices
+            // whose global animator scale was set to zero.
+            val reducedEntryMs = (120L / settings.playbackSpeed)
+                .toLong()
+                .coerceAtLeast(1L)
+                .toInt()
             openProgressTarget = if (popup.deviceState.caseOpen == true) 1f else 0f
             leftLiftTarget = desiredLeftLift
             rightLiftTarget = desiredRightLift
+            launch { cardY.animateTo(0f, tween(reducedEntryMs)) }
+            launch { cardScale.animateTo(1f, tween(reducedEntryMs)) }
+            launch { cardAlpha.animateTo(1f, tween(reducedEntryMs)) }
+            launch { scrimAlpha.animateTo(settings.scrimAlpha, tween(reducedEntryMs)) }
+            launch { productY.animateTo(0f, tween(reducedEntryMs)) }
+            launch { productScale.animateTo(1f, tween(reducedEntryMs)) }
+            launch { productAlpha.animateTo(1f, tween(reducedEntryMs)) }
+            delay(reducedEntryMs.toLong())
             entranceRunning = false
             onBatteryVisible()
             onIdle()

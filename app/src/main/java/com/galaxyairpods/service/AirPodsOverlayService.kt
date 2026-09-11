@@ -9,6 +9,7 @@ import android.view.WindowManager
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.ViewCompositionStrategy
@@ -228,15 +229,19 @@ private fun OverlayNotice(
     val popup by state.collectAsState()
     if (!popup.isVisible) return
 
-    AirPodsPopupSurface(
-        popup = popup,
-        settings = MotionLabSettings.Default,
-        popupDurationSeconds = popupDurationSeconds,
-        reducedMotion = AccessibilityMotion.systemRequestsReducedMotion(LocalContext.current),
-        onDismiss = onDismiss,
-        onHide = onHide,
-        onBatteryVisible = onBatteryVisible,
-        onIdle = onIdle,
-        onDraggingChanged = onDraggingChanged,
-    )
+    // Recreate only for a new semantic popup. Battery samples keep the same
+    // subtree so they update values without resetting the entrance timeline.
+    key(popup.animationId) {
+        AirPodsPopupSurface(
+            popup = popup,
+            settings = MotionLabSettings.Default,
+            popupDurationSeconds = popupDurationSeconds,
+            reducedMotion = AccessibilityMotion.systemRequestsReducedMotion(LocalContext.current),
+            onDismiss = onDismiss,
+            onHide = onHide,
+            onBatteryVisible = onBatteryVisible,
+            onIdle = onIdle,
+            onDraggingChanged = onDraggingChanged,
+        )
+    }
 }
