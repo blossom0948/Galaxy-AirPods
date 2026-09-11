@@ -1,8 +1,8 @@
 package com.galaxyairpods.ui.components
 
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.snap
-import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
@@ -67,13 +67,11 @@ fun ProductRenderer(
 ) {
     val density = LocalDensity.current
     val caseCharging = state.chargingFor(BatterySlot.CASE) == true
+    val caseMotionDurationMs = if (reducedMotion) 120 else 360
+    val budMotionDurationMs = if (reducedMotion) 120 else 300
     val renderedOpenProgress by animateFloatAsState(
         targetValue = openProgress.coerceIn(0f, 1f),
-        animationSpec = if (reducedMotion) {
-            snap()
-        } else {
-            spring(dampingRatio = 0.86f, stiffness = 420f)
-        },
+        animationSpec = tween(caseMotionDurationMs, easing = FastOutSlowInEasing),
         label = "airpods-case-open",
     )
     val outOfCaseLift = with(density) { -52.dp.toPx() }
@@ -83,20 +81,12 @@ fun ProductRenderer(
     val rightTargetLift = (rightLift ?: settledRightLift).coerceIn(outOfCaseLift, 0f)
     val renderedLeftLift by animateFloatAsState(
         targetValue = leftTargetLift,
-        animationSpec = if (reducedMotion) {
-            snap()
-        } else {
-            spring(dampingRatio = 0.82f, stiffness = 360f)
-        },
+        animationSpec = tween(budMotionDurationMs, easing = FastOutSlowInEasing),
         label = "airpods-left-lift",
     )
     val renderedRightLift by animateFloatAsState(
         targetValue = rightTargetLift,
-        animationSpec = if (reducedMotion) {
-            snap()
-        } else {
-            spring(dampingRatio = 0.82f, stiffness = 360f)
-        },
+        animationSpec = tween(budMotionDurationMs, easing = FastOutSlowInEasing),
         label = "airpods-right-lift",
     )
 
@@ -202,14 +192,15 @@ private fun BitmapAirPodsArtwork(
             ArtworkLayer(
                 resourceId = artwork.caseBody,
                 alpha = openAlpha,
-                translationY = with(density) { (4f * (1f - open)).dp.toPx() },
+                translationY = with(density) { (9f * (1f - open)).dp.toPx() },
             )
             ArtworkLayer(
                 resourceId = artwork.openLid,
                 alpha = openAlpha,
-                translationY = with(density) { (-8f * (1f - open)).dp.toPx() },
-                scaleX = 0.98f + 0.02f * open,
-                scaleY = 0.96f + 0.04f * open,
+                // This layer is already rendered in the open pose. Start it
+                // near the hinge and move it clearly upward while the closed
+                // lid fades out; a tiny scale wobble looked like a jerk.
+                translationY = with(density) { (22f * (1f - open)).dp.toPx() },
                 transformOrigin = TransformOrigin(0.5f, 0.94f),
             )
         }

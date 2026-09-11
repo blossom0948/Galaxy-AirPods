@@ -50,6 +50,12 @@ import kotlinx.coroutines.launch
  * window, avoiding a second foreground-service start that Samsung/Android can
  * reject while the app is backgrounded.
  */
+private data class OverlayTrigger(
+    val caseOpen: Boolean?,
+    val leftInCase: Boolean?,
+    val rightInCase: Boolean?,
+)
+
 class AirPodsOverlayService : LifecycleService() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val popupController = PopupMotionController()
@@ -83,9 +89,14 @@ class AirPodsOverlayService : LifecycleService() {
 
         refreshJob?.cancel()
         refreshJob = serviceScope.launch {
+            val trigger = OverlayTrigger(
+                caseOpen = intent?.booleanExtraOrNull(EXTRA_CASE_OPEN),
+                leftInCase = intent?.booleanExtraOrNull(EXTRA_LEFT_IN_CASE),
+                rightInCase = intent?.booleanExtraOrNull(EXTRA_RIGHT_IN_CASE),
+            )
             val state = dataStore.latestDisplayState.first()?.let { stored ->
                 if (dataStore.wearDetectionEnabled.first()) stored else stored.withoutWearDetection()
-            }
+            }?.withOverlayTrigger(trigger)
             if (state == null) {
                 stopSelfResult(startId)
                 return@launch
@@ -98,19 +109,29 @@ class AirPodsOverlayService : LifecycleService() {
             stateJob?.cancel()
             stateJob = launch {
                 var previousState: AirPodsState? = state
+                var firstLiveEmission = true
                 combine(dataStore.latestDisplayState, dataStore.wearDetectionEnabled) { liveState, wearEnabled ->
                     liveState?.let { if (wearEnabled) it else it.withoutWearDetection() }
                 }.collect { liveState ->
                     if (liveState != null) {
+                        // The first DataStore emission can race the monitor's
+                        // saveState call. Apply the event snapshot once so a
+                        // real lid-open event cannot begin with stale false.
+                        val effectiveState = if (firstLiveEmission) {
+                            liveState.withOverlayTrigger(trigger)
+                        } else {
+                            liveState
+                        }
+                        firstLiveEmission = false
                         val previous = previousState
                         when {
-                            previous?.caseOpen != true && liveState.caseOpen == true ->
-                                popupController.dispatch(PopupEvent.CaseOpened(liveState))
-                            previous?.caseOpen == true && liveState.caseOpen == false ->
-                                popupController.dispatch(PopupEvent.CaseClosed(liveState))
-                            else -> popupController.dispatch(PopupEvent.BatteryUpdated(liveState))
+                            previous?.caseOpen != true && effectiveState.caseOpen == true ->
+                                popupController.dispatch(PopupEvent.CaseOpened(effectiveState))
+                            previous?.caseOpen == true && effectiveState.caseOpen == false ->
+                                popupController.dispatch(PopupEvent.CaseClosed(effectiveState))
+                            else -> popupController.dispatch(PopupEvent.BatteryUpdated(effectiveState))
                         }
-                        previousState = liveState
+                        previousState = effectiveState
                     }
                 }
             }
@@ -185,6 +206,19 @@ class AirPodsOverlayService : LifecycleService() {
     override fun onBind(intent: Intent): IBinder? = super.onBind(intent)
 
 }
+
+internal const val EXTRA_CASE_OPEN = "com.galaxyairpods.overlay.CASE_OPEN"
+internal const val EXTRA_LEFT_IN_CASE = "com.galaxyairpods.overlay.LEFT_IN_CASE"
+internal const val EXTRA_RIGHT_IN_CASE = "com.galaxyairpods.overlay.RIGHT_IN_CASE"
+
+private fun Intent.booleanExtraOrNull(key: String): Boolean? =
+    if (hasExtra(key)) getBooleanExtra(key, false) else null
+
+private fun AirPodsState.withOverlayTrigger(trigger: OverlayTrigger): AirPodsState = copy(
+    caseOpen = trigger.caseOpen ?: caseOpen,
+    leftInCase = trigger.leftInCase ?: leftInCase,
+    rightInCase = trigger.rightInCase ?: rightInCase,
+)
 
 /**
  * Compose also requires a SavedStateRegistryOwner for a view that is attached

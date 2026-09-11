@@ -142,7 +142,7 @@ class AirPodsMonitorService : Service() {
                         (caseOpened && dataStore.showOnCaseOpen.first()))
 
                 if (showPopup) {
-                    showOverlayIfPermitted()
+                    showOverlayIfPermitted(displayState, forceCaseOpen = caseOpened)
                 }
             }
         }
@@ -184,7 +184,7 @@ class AirPodsMonitorService : Service() {
                 // instead of silently disappearing when no battery sample has
                 // arrived yet.
                 if ((connectedNow || nearbyDetected) && dataStore.autoPopup.first()) {
-                    showOverlayIfPermitted()
+                    showOverlayIfPermitted(displayState)
                 }
             }
         }
@@ -274,7 +274,10 @@ class AirPodsMonitorService : Service() {
         mediaPlaybackController.onWearStateChanged(current)
     }
 
-    private fun showOverlayIfPermitted() {
+    private fun showOverlayIfPermitted(
+        state: AirPodsState? = null,
+        forceCaseOpen: Boolean = false,
+    ) {
         if (!Settings.canDrawOverlays(this)) {
             Log.w(TAG, "Overlay unavailable: SYSTEM_ALERT_WINDOW is not granted")
             return
@@ -284,7 +287,13 @@ class AirPodsMonitorService : Service() {
             // monitor. Starting a second FGS here is rejected on some Samsung
             // builds when the activity is closed, so keep the popup service
             // short-lived and ordinary.
-            startService(Intent(this, AirPodsOverlayService::class.java))
+            val intent = Intent(this, AirPodsOverlayService::class.java).apply {
+                state?.caseOpen?.let { putExtra(EXTRA_CASE_OPEN, it) }
+                state?.leftInCase?.let { putExtra(EXTRA_LEFT_IN_CASE, it) }
+                state?.rightInCase?.let { putExtra(EXTRA_RIGHT_IN_CASE, it) }
+                if (forceCaseOpen) putExtra(EXTRA_CASE_OPEN, true)
+            }
+            startService(intent)
         }.onFailure { error ->
             Log.e(TAG, "Unable to start overlay service", error)
         }
