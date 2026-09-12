@@ -1,6 +1,7 @@
 package com.galaxyairpods.ui.components
 
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -47,7 +49,7 @@ import com.galaxyairpods.domain.model.AirPodsWearState
 import com.galaxyairpods.domain.model.PopupPhase
 import com.galaxyairpods.domain.model.PopupUiState
 import com.galaxyairpods.domain.motion.MotionLabSettings
-import com.galaxyairpods.domain.motion.MotionTokens
+import com.galaxyairpods.domain.motion.ProductMotion
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -73,187 +75,56 @@ fun AirPodsPopupSurface(
     val productScale = remember { Animatable(0.955f) }
     val productAlpha = remember { Animatable(0f) }
     val dragOffset = remember { Animatable(0f) }
-    var openProgressTarget by remember { mutableStateOf(0f) }
-    var leftLiftTarget by remember { mutableStateOf(0f) }
-    var rightLiftTarget by remember { mutableStateOf(0f) }
-    var componentLayoutTarget by remember { mutableStateOf(0f) }
-    var entrancePopupId by remember { mutableStateOf<Long?>(null) }
-    var entranceRunning by remember { mutableStateOf(false) }
+    val productClock = remember(popup.animationId) { Animatable(0f) }
+    var batteriesVisible by remember(popup.animationId) { mutableStateOf(false) }
+    val exiting = popup.phase == PopupPhase.EXITING
+    val caseOpenForMotion = popup.deviceState.caseOpen == true
+    val leftOutForMotion = popup.leftRemoved || popup.deviceState.leftInCase == false
+    val rightOutForMotion = popup.rightRemoved || popup.deviceState.rightInCase == false
 
-    val desiredLeftLift = if (popup.leftRemoved) {
-        with(density) { -52.dp.toPx() }
-    } else {
-        0f
-    }
-    val desiredRightLift = if (popup.rightRemoved) {
-        with(density) { -52.dp.toPx() }
-    } else {
-        0f
-    }
-
-    // Battery updates never restart this effect. A new animationId starts a
-    // complete popup entrance, while case/earbud changes after that are
-    // handled by the smaller target effect below.
-    val animationKey = if (popup.phase == PopupPhase.EXITING) popup.eventId else popup.animationId
-    LaunchedEffect(animationKey, reducedMotion) {
-        if (popup.phase == PopupPhase.EXITING) {
-            entranceRunning = false
-            openProgressTarget = 0f
-            leftLiftTarget = desiredLeftLift
-            rightLiftTarget = desiredRightLift
-            componentLayoutTarget = 0f
-            val exitDurationMs = if (reducedMotion) 120L else MotionLabExitMs
-            launch {
-                cardY.animateTo(
-                    settings.exitY,
-                    if (reducedMotion) tween(exitDurationMs.toInt())
-                    else spring(dampingRatio = 0.96f, stiffness = 520f),
-                )
-            }
-            launch {
-                cardScale.animateTo(
-                    settings.exitScale,
-                    if (reducedMotion) tween(exitDurationMs.toInt())
-                    else spring(dampingRatio = 0.98f, stiffness = 520f),
-                )
-            }
-            launch {
-                cardAlpha.animateTo(
-                    0f,
-                    if (reducedMotion) tween(exitDurationMs.toInt())
-                    else spring(dampingRatio = 1f, stiffness = 650f),
-                )
-            }
-            launch {
-                scrimAlpha.animateTo(
-                    0f,
-                    if (reducedMotion) tween(exitDurationMs.toInt())
-                    else spring(dampingRatio = 1f, stiffness = 700f),
-                )
-            }
-            delay((exitDurationMs / settings.playbackSpeed).toLong())
+    // Case / buds / docking all share this clock. Battery or sensor updates
+    // change the text, never the decorative introduction or its object poses.
+    LaunchedEffect(popup.animationId, exiting, reducedMotion) {
+        if (exiting) {
+            // Hold the last product frame while dismissing the card.
+            // Resetting the product here made the case fly back through buds.
+            launch { cardAlpha.animateTo(0f, tween(if (reducedMotion) 100 else 200)) }
+            launch { cardScale.animateTo(0.97f, tween(200)) }
+            launch { scrimAlpha.animateTo(0f, tween(200)) }
+            delay(if (reducedMotion) 100L else 200L)
             onHide()
             return@LaunchedEffect
         }
-
-        entrancePopupId = popup.animationId
-        entranceRunning = true
-
-        if (reducedMotion) {
-            // Reduced motion still gets a short, observable fade/crossfade.
-            // Snapping every channel made the popup look broken on devices
-            // whose global animator scale was set to zero.
-            val reducedEntryMs = (120L / settings.playbackSpeed)
-                .toLong()
-                .coerceAtLeast(1L)
-                .toInt()
-            openProgressTarget = if (popup.deviceState.caseOpen == true) 1f else 0f
-            leftLiftTarget = desiredLeftLift
-            rightLiftTarget = desiredRightLift
-            componentLayoutTarget = 0f
-            launch { cardY.animateTo(0f, tween(reducedEntryMs)) }
-            launch { cardScale.animateTo(1f, tween(reducedEntryMs)) }
-            launch { cardAlpha.animateTo(1f, tween(reducedEntryMs)) }
-            launch { scrimAlpha.animateTo(settings.scrimAlpha, tween(reducedEntryMs)) }
-            launch { productY.animateTo(0f, tween(reducedEntryMs)) }
-            launch { productScale.animateTo(1f, tween(reducedEntryMs)) }
-            launch { productAlpha.animateTo(1f, tween(reducedEntryMs)) }
-            delay(reducedEntryMs.toLong())
-            entranceRunning = false
-            onBatteryVisible()
-            onIdle()
-            return@LaunchedEffect
-        }
-
-        // Reset the channels for every new popup. Without this, re-opening an
-        // overlay that shares its ComposeView can start at the settled frame
-        // and make the Apple-like entrance appear to be missing.
-        cardY.snapTo(settings.cardInitialY)
-        cardScale.snapTo(settings.cardInitialScale)
+        val speed = settings.playbackSpeed.coerceAtLeast(0.1f)
+        val animateCaseOpen = caseOpenForMotion && !reducedMotion
+        productClock.snapTo(if (animateCaseOpen) 0f else ProductMotion.DurationMs.toFloat())
+        batteriesVisible = !animateCaseOpen
+        cardY.snapTo(if (reducedMotion) 0f else settings.cardInitialY)
+        cardScale.snapTo(if (reducedMotion) 1f else settings.cardInitialScale)
         cardAlpha.snapTo(0f)
         scrimAlpha.snapTo(0f)
-        productY.snapTo(settings.productInitialYOffsetDp)
-        productScale.snapTo(settings.productInitialScale)
+        productY.snapTo(if (reducedMotion) 0f else 8f)
+        productScale.snapTo(1f)
         productAlpha.snapTo(0f)
         dragOffset.snapTo(0f)
-        openProgressTarget = 0f
-        leftLiftTarget = 0f
-        rightLiftTarget = 0f
-        componentLayoutTarget = 0f
-
+        launch { cardY.animateTo(0f, tween(if (reducedMotion) 120 else 260)) }
+        launch { cardScale.animateTo(1f, tween(if (reducedMotion) 120 else 260)) }
+        launch { cardAlpha.animateTo(1f, tween(120)) }
+        launch { scrimAlpha.animateTo(settings.scrimAlpha, tween(160)) }
+        launch { productAlpha.animateTo(1f, tween(120)) }
+        launch { productY.animateTo(0f, tween(200)) }
         launch {
-            cardY.animateTo(
-                targetValue = 0f,
-                animationSpec = spring(
-                    dampingRatio = settings.cardDamping,
-                    stiffness = settings.cardStiffness,
-                ),
-            )
-        }
-        launch { cardScale.animateTo(1f, spring(settings.cardDamping, settings.cardStiffness)) }
-        launch { cardAlpha.animateTo(1f, spring(dampingRatio = 1f, stiffness = 700f)) }
-        launch {
-            scrimAlpha.animateTo(settings.scrimAlpha, spring(dampingRatio = 1f, stiffness = 800f))
-        }
-
-        launch {
-            delay((settings.productDelayMs / settings.playbackSpeed).toLong())
-            openProgressTarget = if (popup.deviceState.caseOpen == true) 1f else 0f
-            productAlpha.animateTo(1f, spring(dampingRatio = 1f, stiffness = 700f))
-            productY.animateTo(0f, spring(settings.productDamping, settings.productStiffness))
-            productScale.animateTo(1f, spring(settings.productDamping, settings.productStiffness))
-        }
-        launch {
-            // Wait for the lid to reach its open pose, then lift both earbuds
-            // from the same frame.  The previous stagger made the two buds
-            // look unrelated and also exposed their different source-canvas
-            // sizes more clearly.
-            delay(((settings.productDelayMs + MotionTokens.CaseOpenDurationMs) /
-                settings.playbackSpeed).toLong())
-            leftLiftTarget = desiredLeftLift
-            rightLiftTarget = desiredRightLift
-            delay(((MotionTokens.EarbudMotionDurationMs + MotionTokens.ComponentArrangeDelayMs) /
-                settings.playbackSpeed).toLong())
-            if (popup.deviceState.caseOpen == true && popup.leftRemoved && popup.rightRemoved) {
-                componentLayoutTarget = 1f
-            }
-        }
-        launch {
-            delay((settings.batteryDelayMs / settings.playbackSpeed).toLong())
+            if (animateCaseOpen) delay((ProductMotion.DockStartMs / speed).toLong())
+            batteriesVisible = true
             onBatteryVisible()
         }
-        launch {
-            delay((MotionTokens.PopupEntranceCompleteMs / settings.playbackSpeed).toLong())
-            entranceRunning = false
-            onIdle()
+        if (animateCaseOpen) {
+            productClock.animateTo(ProductMotion.DurationMs.toFloat(),
+                tween((ProductMotion.DurationMs / speed).toInt(), easing = LinearEasing))
+        } else if (reducedMotion) {
+            delay(120)
         }
-    }
-
-    // A lid or one-bud change while the popup is visible retargets only the
-    // affected product channel. It never restarts the card or battery reveal.
-    LaunchedEffect(
-        popup.deviceState.caseOpen,
-        popup.leftRemoved,
-        popup.rightRemoved,
-        popup.deviceState.leftInCase,
-        popup.deviceState.rightInCase,
-        popup.animationId,
-        entranceRunning,
-        reducedMotion,
-    ) {
-        if (!entranceRunning &&
-            entrancePopupId == popup.animationId &&
-            popup.phase != PopupPhase.EXITING
-        ) {
-            openProgressTarget = if (popup.deviceState.caseOpen == true) 1f else 0f
-            leftLiftTarget = desiredLeftLift
-            rightLiftTarget = desiredRightLift
-            componentLayoutTarget = if (
-                popup.deviceState.caseOpen == true &&
-                popup.leftRemoved &&
-                popup.rightRemoved
-            ) 1f else 0f
-        }
+        onIdle()
     }
 
     LaunchedEffect(popup.eventId, popup.phase, popupDurationSeconds) {
@@ -276,6 +147,7 @@ fun AirPodsPopupSurface(
     ) {
         Surface(
             modifier = Modifier
+                .widthIn(max = 440.dp)
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 16.dp)
                 .navigationBarsPadding()
@@ -364,27 +236,21 @@ fun AirPodsPopupSurface(
                 ) {
                     ProductRenderer(
                         state = popup.deviceState,
-                        artworkHeight = 188.dp,
-                        openProgress = openProgressTarget,
-                        leftLift = leftLiftTarget,
-                        rightLift = rightLiftTarget,
-                        componentLayout = componentLayoutTarget,
-                        // Once both buds are really out of the open case, the
-                        // settled popup focuses on the two independent buds.
-                        // During entrance/partial removal the case remains so
-                        // the lid-to-bud motion is still understandable.
-                        showCase = shouldShowCase(popup, keepCaseDuringEntrance = entranceRunning),
+                        artworkHeight = 224.dp,
+                        motionPose = ProductMotion.frame(
+                            elapsedMs = productClock.value,
+                            caseOpen = caseOpenForMotion,
+                            leftOutOfCase = leftOutForMotion,
+                            rightOutOfCase = rightOutForMotion,
+                        ),
+                        showCase = true,
                         reducedMotion = reducedMotion,
                     )
                 }
 
                 BatteryGrid(
                     state = popup.deviceState,
-                    reveal = popup.phase == PopupPhase.SHOWING_BATTERY ||
-                        popup.phase == PopupPhase.CONNECTED ||
-                        popup.phase == PopupPhase.UPDATED ||
-                        popup.phase == PopupPhase.IDLE_VISIBLE ||
-                        popup.phase == PopupPhase.DRAGGING,
+                    reveal = batteriesVisible,
                     staggerMs = settings.batteryStaggerMs,
                     reducedMotion = reducedMotion,
                 )
@@ -435,8 +301,6 @@ private fun statusText(popup: PopupUiState): String = when (popup.phase) {
     PopupPhase.HIDDEN -> ""
 }
 
-private const val MotionLabExitMs = 220L
-
 private fun wearLabel(state: AirPodsWearState): String = when (state) {
     AirPodsWearState.LEFT_IN_EAR -> "왼쪽 착용"
     AirPodsWearState.RIGHT_IN_EAR -> "오른쪽 착용"
@@ -458,22 +322,6 @@ private fun formatAge(timestamp: Long?): String {
         else -> "${seconds / 3_600}시간 전"
     }
 }
-
-private fun shouldShowCase(
-    popup: PopupUiState,
-    keepCaseDuringEntrance: Boolean,
-): Boolean =
-    keepCaseDuringEntrance ||
-        popup.deviceState.caseOpen != false ||
-        popup.deviceState.leftInCase != false ||
-        popup.deviceState.rightInCase != false ||
-        popup.phase in setOf(
-            PopupPhase.ENTERING,
-            PopupPhase.DETECTED,
-            PopupPhase.SHOWING_DEVICE,
-            PopupPhase.SHOWING_BATTERY,
-            PopupPhase.EXITING,
-        )
 
 private fun com.galaxyairpods.domain.model.AirPodsState.batterySourceLabel(): String = when (batterySource) {
     "AAP_CLASSIC_EXACT" -> "AAP · 정밀 배터리"

@@ -4,419 +4,146 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.Image
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import com.galaxyairpods.R
 import com.galaxyairpods.domain.model.AirPodsModel
 import com.galaxyairpods.domain.model.AirPodsState
 import com.galaxyairpods.domain.model.BatterySlot
 import com.galaxyairpods.domain.model.isMax
 import com.galaxyairpods.domain.model.isPro
-import com.galaxyairpods.domain.motion.MotionTokens
+import com.galaxyairpods.domain.motion.ProductMotion
+import com.galaxyairpods.domain.motion.ProductPose
 import kotlin.math.min
 
-/**
- * Renders the product as independent layers instead of scaling one flat
- * bitmap. The verified Pro 2 USB-C artwork uses generated transparent WebP
- * layers; every other model uses its original model-specific Canvas fallback.
- * This keeps the popup light enough for a TYPE_APPLICATION_OVERLAY window
- * while still giving the lid, body, left bud and right bud independent motion
- * channels.
- */
 @Composable
 fun ProductRenderer(
     state: AirPodsState,
     modifier: Modifier = Modifier,
     artworkHeight: Dp = 188.dp,
     openProgress: Float = if (state.caseOpen == true) 1f else 0f,
-    // Null means “derive the settled position from the live state”. Popup
-    // callers pass an explicit animated target so a bud can begin in-case
-    // and leave the case after the lid opens.
     leftLift: Float? = null,
     rightLift: Float? = null,
-    componentLayout: Float = 0f,
     showCase: Boolean = true,
     reducedMotion: Boolean = false,
+    motionPose: ProductPose? = null,
 ) {
     val density = LocalDensity.current
-    val caseCharging = state.chargingFor(BatterySlot.CASE) == true
-    val caseMotionDurationMs = if (reducedMotion) {
-        120
-    } else {
-        MotionTokens.CaseOpenDurationMs.toInt()
-    }
-    val budMotionDurationMs = if (reducedMotion) {
-        120
-    } else {
-        MotionTokens.EarbudMotionDurationMs.toInt()
-    }
-    val renderedOpenProgress by animateFloatAsState(
-        targetValue = openProgress.coerceIn(0f, 1f),
-        animationSpec = tween(caseMotionDurationMs, easing = FastOutSlowInEasing),
-        label = "airpods-case-open",
-    )
-    val outOfCaseLift = with(density) { -52.dp.toPx() }
-    val settledLeftLift = if (state.leftInCase == false) outOfCaseLift else 0f
-    val settledRightLift = if (state.rightInCase == false) outOfCaseLift else 0f
-    val leftTargetLift = (leftLift ?: settledLeftLift).coerceIn(outOfCaseLift, 0f)
-    val rightTargetLift = (rightLift ?: settledRightLift).coerceIn(outOfCaseLift, 0f)
-    val renderedLeftLift by animateFloatAsState(
-        targetValue = leftTargetLift,
-        animationSpec = tween(budMotionDurationMs, easing = FastOutSlowInEasing),
-        label = "airpods-left-lift",
-    )
-    val renderedRightLift by animateFloatAsState(
-        targetValue = rightTargetLift,
-        animationSpec = tween(budMotionDurationMs, easing = FastOutSlowInEasing),
-        label = "airpods-right-lift",
-    )
-    val renderedComponentLayout by animateFloatAsState(
-        targetValue = componentLayout.coerceIn(0f, 1f),
-        animationSpec = if (reducedMotion) {
-            tween(120, easing = FastOutSlowInEasing)
-        } else {
-            tween(
-                MotionTokens.ComponentArrangeDurationMs.toInt(),
-                easing = FastOutSlowInEasing,
-            )
-        },
-        label = "airpods-component-arrange",
-    )
-
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(artworkHeight)
-            .semantics { contentDescription = state.model.label + " 제품" },
-    ) {
-        val bitmapArtwork = state.model.bitmapArtwork()
-        if (bitmapArtwork != null) {
-            BitmapAirPodsArtwork(
-                artwork = bitmapArtwork,
-                openProgress = renderedOpenProgress,
-                leftLift = renderedLeftLift,
-                rightLift = renderedRightLift,
-                arrangementProgress = renderedComponentLayout,
-                caseCharging = caseCharging,
-                showCase = showCase,
-            )
-        } else {
-            Canvas(Modifier.fillMaxWidth().height(artworkHeight)) {
-                if (state.model.isMax) {
-                    drawMaxHeadphones()
-                } else {
-                    drawAirPodsArtwork(
-                        model = state.model,
-                        openProgress = renderedOpenProgress,
-                        leftLift = renderedLeftLift,
-                        rightLift = renderedRightLift,
-                        caseCharging = caseCharging,
-                        showCase = showCase,
-                    )
-                }
-            }
-        }
-    }
-}
-
-private data class AirPodsBitmapArtwork(
-    val closedCase: Int,
-    val caseBody: Int,
-    val openLid: Int,
-    val leftBud: Int,
-    val rightBud: Int,
-)
-
-private fun AirPodsModel.bitmapArtwork(): AirPodsBitmapArtwork? = when (artworkTechnology()) {
-    AirPodsArtworkTechnology.BITMAP_LAYERS -> AirPodsBitmapArtwork(
-        closedCase = R.drawable.airpods_pro2_lid_closed,
-        caseBody = R.drawable.airpods_pro2_case_body,
-        openLid = R.drawable.airpods_pro2_lid_open,
-        leftBud = R.drawable.airpods_pro2_bud_left,
-        rightBud = R.drawable.airpods_pro2_bud_right,
-    )
-    AirPodsArtworkTechnology.VECTOR_FALLBACK -> null
-}
-
-/**
- * Uses the generated product render as five aligned transparent layers. The
- * closed case is crossfaded into the open body/lid rather than being rotated
- * as a flat bitmap, while each earbud has its own lift and horizontal escape
- * path. This keeps the motion believable without distorting the rendered
- * product.
- */
-@Composable
-private fun BitmapAirPodsArtwork(
-    artwork: AirPodsBitmapArtwork,
-    openProgress: Float,
-    leftLift: Float,
-    rightLift: Float,
-    arrangementProgress: Float,
-    caseCharging: Boolean,
-    showCase: Boolean,
-) {
-    val density = LocalDensity.current
-    val open = openProgress.coerceIn(0f, 1f)
-    val arrangement = arrangementProgress.coerceIn(0f, 1f)
-    val arrangementEased = FastOutSlowInEasing.transform(arrangement)
-    val caseAlpha = if (showCase) 1f else 0f
-    val closedAlpha = caseAlpha * (1f - open)
-    val openAlpha = caseAlpha * open
-    val inCaseThreshold = with(density) { -8.dp.toPx() }
     val maxLift = with(density) { 52.dp.toPx() }
-    val horizontalEscape = with(density) { 18.dp.toPx() }
-    // The isolated bud renders share a transparent canvas, but their opaque
-    // artwork does not occupy the same bounds. Normalize the right source
-    // slightly so the physical buds are the same apparent size on screen.
-    val budScale = 0.48f
-    val rightBudScaleNormalization = 1.50f
-    val leftBaseOffset = with(density) { (-35).dp.toPx() }
-    val rightBaseOffset = with(density) { 22.dp.toPx() }
-    val leftInCase = leftLift > inCaseThreshold
-    val rightInCase = rightLift > inCaseThreshold
-    val leftProgress = (-leftLift / maxLift).coerceIn(0f, 1f)
-    val rightProgress = (-rightLift / maxLift).coerceIn(0f, 1f)
-
-    BoxWithConstraints(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center,
-    ) {
-        val widthPx = with(density) { maxWidth.toPx() }
-        val gapPx = with(density) { 8.dp.toPx() }
-        val slotWidth = ((widthPx - gapPx * 2f) / 3f).coerceAtLeast(0f)
-        val leftSlotX = slotWidth / 2f
-        val rightSlotX = slotWidth + gapPx + slotWidth / 2f
-        val caseSlotX = (slotWidth + gapPx) * 2f + slotWidth / 2f
-        val centerX = widthPx / 2f
-        val leftSlotDx = leftSlotX - centerX
-        val rightSlotDx = rightSlotX - centerX
-        val caseSlotDx = caseSlotX - centerX
-        val finalComponentY = with(density) { 48.dp.toPx() }
-        val componentCanvasHeight = 92.dp
-        val componentBudScale = 0.62f
-        val componentCaseScale = 0.72f
-        // The right bud source is shifted to the right inside its transparent
-        // canvas. Compensate when it is placed above the middle battery item.
-        val rightArtworkCenterCorrection = with(density) { 15.dp.toPx() }
-
-        // Once both buds finish rising, the hero resolves into the three
-        // battery-aligned component slots. The case takes a short downward
-        // path before travelling to the case slot on the right.
-        val caseDeparturePhase = (arrangement / 0.35f).coerceIn(0f, 1f)
-        val caseReturnPhase = ((arrangement - 0.35f) / 0.65f).coerceIn(0f, 1f)
-        val caseDown = if (arrangement < 0.35f) {
-            caseDeparturePhase
+    val open by animateFloatAsState(openProgress.coerceIn(0f, 1f),
+        tween(if (reducedMotion) 120 else 420, easing = FastOutSlowInEasing), label = "lid")
+    val left by animateFloatAsState(
+        ((leftLift?.div(-maxLift)) ?: if (state.leftInCase == false) 1f else 0f).coerceIn(0f, 1f),
+        tween(if (reducedMotion) 120 else 300), label = "left")
+    val right by animateFloatAsState(
+        ((rightLift?.div(-maxLift)) ?: if (state.rightInCase == false) 1f else 0f).coerceIn(0f, 1f),
+        tween(if (reducedMotion) 120 else 300), label = "right")
+    // A popup supplies the exact frame from its single clock. Do not animate
+    // those values again: that used to make geometry lag behind phase changes.
+    val pose = motionPose ?: ProductPose(open, left, right)
+    val resources = LocalContext.current.resources
+    val scene = if (state.model.artworkTechnology() == AirPodsArtworkTechnology.BITMAP_LAYERS) {
+        remember(resources) { ProductArtworkScene(resources) }
+    } else null
+    Canvas(modifier.fillMaxWidth().height(artworkHeight)
+        .semantics { contentDescription = state.model.label + " 제품" }) {
+        if (scene != null) {
+            val canvas = drawContext.canvas.nativeCanvas
+            canvas.save()
+            canvas.scale(density.density, density.density)
+            scene.draw(canvas, size.width / density.density, size.height / density.density,
+                pose, showCase, state.chargingFor(BatterySlot.CASE) == true)
+            canvas.restore()
+        } else if (state.model.isMax) {
+            drawMaxHeadphones()
         } else {
-            1f - caseReturnPhase
-        }
-        val caseHeroX = caseSlotDx * caseReturnPhase
-        val caseHeroY = with(density) { 52.dp.toPx() } * caseDown
-        val finalCaseAlpha = ((arrangement - 0.44f) / 0.56f).coerceIn(0f, 1f)
-        val finalBudAlpha = ((arrangement - 0.28f) / 0.72f).coerceIn(0f, 1f)
-        val initialLeftY = if (leftInCase) {
-            with(density) { (-3f * open).dp.toPx() }
-        } else {
-            leftLift
-        }
-        val initialRightY = if (rightInCase) {
-            with(density) { (-3f * open).dp.toPx() }
-        } else {
-            rightLift
-        }
-        val heroLeftX = leftBaseOffset - horizontalEscape * leftProgress
-        val heroRightX = rightBaseOffset + horizontalEscape * rightProgress
-        val arrangedLeftX = heroLeftX + (leftSlotDx - heroLeftX) * arrangementEased
-        val arrangedRightX = heroRightX +
-            (rightSlotDx - rightArtworkCenterCorrection - heroRightX) * arrangementEased
-        val arrangedLeftY = initialLeftY + (finalComponentY - initialLeftY) * arrangementEased
-        val arrangedRightY = initialRightY + (finalComponentY - initialRightY) * arrangementEased
-
-        if (showCase) {
-            ArtworkLayer(
-                resourceId = artwork.closedCase,
-                alpha = closedAlpha * (1f - arrangementEased),
-                translationX = caseHeroX,
-                translationY = caseHeroY,
-            )
-            ArtworkLayer(
-                resourceId = artwork.caseBody,
-                alpha = openAlpha * (1f - arrangementEased),
-                translationX = caseHeroX,
-                translationY = caseHeroY +
-                    with(density) { (9f * (1f - open)).dp.toPx() },
-            )
-            ArtworkLayer(
-                resourceId = artwork.openLid,
-                alpha = openAlpha * (1f - arrangementEased),
-                translationX = caseHeroX,
-                // This layer is already rendered in the open pose. Start it
-                // near the hinge and move it clearly upward while the closed
-                // lid fades out; a tiny scale wobble looked like a jerk.
-                translationY = caseHeroY +
-                    with(density) { (22f * (1f - open)).dp.toPx() },
-                transformOrigin = TransformOrigin(0.5f, 0.94f),
-            )
-        }
-
-        ArtworkLayer(
-            resourceId = artwork.leftBud,
-            alpha = (if (leftInCase) openAlpha else 1f) * (1f - arrangementEased),
-            translationX = arrangedLeftX,
-            translationY = arrangedLeftY,
-            scaleX = budScale + 0.02f * leftProgress,
-            scaleY = budScale + 0.02f * leftProgress,
-        )
-        ArtworkLayer(
-            resourceId = artwork.rightBud,
-            alpha = (if (rightInCase) openAlpha else 1f) * (1f - arrangementEased),
-            translationX = arrangedRightX,
-            translationY = arrangedRightY,
-            scaleX = (budScale + 0.02f * rightProgress) * rightBudScaleNormalization,
-            scaleY = (budScale + 0.02f * rightProgress) * rightBudScaleNormalization,
-        )
-
-        if (showCase && finalCaseAlpha > 0f) {
-            ArtworkLayer(
-                resourceId = artwork.caseBody,
-                alpha = finalCaseAlpha,
-                canvasHeight = componentCanvasHeight,
-                translationX = caseSlotDx,
-                translationY = finalComponentY,
-                scaleX = componentCaseScale,
-                scaleY = componentCaseScale,
-            )
-            ArtworkLayer(
-                resourceId = artwork.openLid,
-                alpha = finalCaseAlpha,
-                canvasHeight = componentCanvasHeight,
-                translationX = caseSlotDx,
-                translationY = finalComponentY,
-                scaleX = componentCaseScale,
-                scaleY = componentCaseScale,
-            )
-        }
-        if (finalBudAlpha > 0f) {
-            ArtworkLayer(
-                resourceId = artwork.leftBud,
-                alpha = finalBudAlpha,
-                canvasHeight = componentCanvasHeight,
-                translationX = leftSlotDx,
-                translationY = finalComponentY,
-                scaleX = componentBudScale,
-                scaleY = componentBudScale,
-            )
-            ArtworkLayer(
-                resourceId = artwork.rightBud,
-                alpha = finalBudAlpha,
-                canvasHeight = componentCanvasHeight,
-                translationX = rightSlotDx - rightArtworkCenterCorrection,
-                translationY = finalComponentY,
-                scaleX = componentBudScale * rightBudScaleNormalization,
-                scaleY = componentBudScale * rightBudScaleNormalization,
-            )
-        }
-
-        // The closed-case source contains a neutralized indicator position in
-        // the original render. Cover its static color while closed so a green
-        // light is shown only when fresh case charging evidence exists.
-        if (showCase) {
-            Canvas(Modifier.fillMaxWidth().matchParentSize()) {
-                val indicatorCenter = Offset(x = size.width / 2f, y = size.height * 0.54f)
-                if (closedAlpha > 0.01f) {
-                    drawCircle(
-                        color = Color(0xFFD7DEE7),
-                        radius = with(density) { 4.dp.toPx() },
-                        center = indicatorCenter,
-                        alpha = closedAlpha,
-                    )
-                }
-                if (caseCharging) {
-                    drawCircle(
-                        color = Color(0xFF16C784),
-                        radius = with(density) { 3.dp.toPx() },
-                        center = indicatorCenter,
-                        alpha = openAlpha.coerceAtLeast(closedAlpha),
-                    )
-                }
-                if (caseCharging && finalCaseAlpha > 0f) {
-                    drawCircle(
-                        color = Color(0xFF16C784),
-                        radius = with(density) { 2.2.dp.toPx() },
-                        center = Offset(
-                            x = centerX + caseSlotDx,
-                            y = size.height / 2f + finalComponentY,
-                        ),
-                        alpha = finalCaseAlpha,
-                    )
-                }
-            }
+            drawVectorProductScene(state, pose, showCase)
         }
     }
 }
 
-@Composable
-private fun ArtworkLayer(
-    resourceId: Int,
-    alpha: Float,
-    translationX: Float = 0f,
-    translationY: Float = 0f,
-    scaleX: Float = 1f,
-    scaleY: Float = 1f,
-    transformOrigin: TransformOrigin = TransformOrigin.Center,
-    canvasHeight: Dp? = null,
-) {
-    Image(
-        painter = painterResource(resourceId),
-        contentDescription = null,
-        // The verified bitmap layers share one 768x686 transparent canvas.
-        // Keep that canvas ratio intact; fitting it into the wide popup row
-        // otherwise makes the real product look unnaturally narrow.
-        contentScale = ContentScale.FillBounds,
-        modifier = Modifier
-            .then(if (canvasHeight == null) Modifier.fillMaxHeight() else Modifier.height(canvasHeight))
-            .aspectRatio(BITMAP_CANVAS_ASPECT)
-            .graphicsLayer {
-                this.alpha = alpha.coerceIn(0f, 1f)
-                this.translationX = translationX
-                this.translationY = translationY
-                this.scaleX = scaleX
-                this.scaleY = scaleY
-                this.transformOrigin = transformOrigin
-            },
-    )
+private fun DrawScope.drawVectorProductScene(state: AirPodsState, pose: ProductPose, showCase: Boolean) {
+    val stageUnit = min(1f, min(size.width / 280.dp.toPx(), size.height / 224.dp.toPx()))
+    val unit = 0.67f * density * stageUnit
+    val geometry = state.model.artworkGeometry()
+    val width = geometry.caseWidth * unit
+    val bodyHeight = geometry.bodyHeight * unit
+    val dock = pose.dock
+    val departure = com.galaxyairpods.domain.motion.ProductMotion.smooth((dock / 0.45f).coerceIn(0f, 1f))
+    val arrival = com.galaxyairpods.domain.motion.ProductMotion.smooth(((dock - 0.60f) / 0.4f).coerceIn(0f, 1f))
+    val gap = 8.dp.toPx()
+    val column = (size.width - 2f * gap) / 3f
+    val inSlot = dock >= 0.5f
+    val scale = if (inSlot) 0.5f else 1f
+    val cx = if (inSlot) size.width - column / 2f else size.width / 2f
+    val bottom = size.height - 16.dp.toPx() +
+        (if (inSlot) (1f - arrival) * 14f else departure * 25f).dp.toPx()
+    val top = bottom - bodyHeight * scale
+    val caseAlpha = if (inSlot) arrival else 1f - departure
+    // Fade the entire vector case as one group; each bud is drawn once.
+    fun case(frontOnly: Boolean) {
+        if (!showCase || caseAlpha <= 0f) return
+        val c = drawContext.canvas.nativeCanvas
+        c.saveLayerAlpha(0f, 0f, size.width, size.height, (255 * caseAlpha).toInt())
+        if (!frontOnly) {
+            drawCaseLid(cx - width * scale / 2f, top, width * scale,
+                geometry.lidHeight * unit * scale, geometry.cornerRadius * unit * scale,
+                Offset(cx, top), pose.lid, unit * scale)
+        }
+        drawCaseBody(cx - width * scale / 2f, top, width * scale, bodyHeight * scale,
+            geometry.cornerRadius * unit * scale, pose.lid)
+        c.restore()
+    }
+    case(false)
+    fun bud(side: Float, lift: Float, target: Float) {
+        val startX = size.width / 2f + side * (34f + 16f * lift).dp.toPx()
+        val startY = (size.height - 100.dp.toPx()) * (1f - lift) + 38.dp.toPx() * lift
+        val budAlpha = if (lift > 0.001f || !showCase) 1f else {
+            ProductMotion.smooth(((pose.lid - 0.45f) / 0.55f).coerceIn(0f, 1f))
+        }
+        drawEarbud(Offset(startX + (target - startX) * dock,
+            startY + (size.height - 55.dp.toPx() - startY) * dock),
+            geometry, unit, side * 7f, budAlpha)
+    }
+    bud(-1f, pose.leftLift, column / 2f)
+    bud(1f, pose.rightLift, size.width / 2f)
+    if (showCase && caseAlpha > 0f && dock < 0.5f && pose.lid > 0.001f) {
+        val c = drawContext.canvas.nativeCanvas
+        c.saveLayerAlpha(0f, 0f, size.width, size.height, (255 * caseAlpha).toInt())
+        clipRect(
+            left = cx - width * scale / 2f,
+            top = top + bodyHeight * scale * 0.25f,
+            right = cx + width * scale / 2f,
+            bottom = top + bodyHeight * scale,
+        ) {
+            drawCaseBody(cx - width * scale / 2f, top, width * scale, bodyHeight * scale,
+                geometry.cornerRadius * unit * scale, pose.lid)
+        }
+        c.restore()
+    }
 }
-
-private const val BITMAP_CANVAS_ASPECT = 768f / 686f
 
 private const val DESIGN_WIDTH = 360f
 private const val DESIGN_HEIGHT = 190f
@@ -472,124 +199,6 @@ private fun AirPodsModel.artworkGeometry(): AirPodsArtworkGeometry = when {
     )
 }
 
-private fun DrawScope.drawAirPodsArtwork(
-    model: AirPodsModel,
-    openProgress: Float,
-    leftLift: Float,
-    rightLift: Float,
-    caseCharging: Boolean,
-    showCase: Boolean,
-) {
-    val geometry = model.artworkGeometry()
-    val unit = min(size.width / DESIGN_WIDTH, size.height / DESIGN_HEIGHT)
-    val originX = (size.width - DESIGN_WIDTH * unit) / 2f
-    val originY = (size.height - DESIGN_HEIGHT * unit) / 2f
-    val centerX = originX + DESIGN_WIDTH * unit / 2f
-    val bodyWidth = geometry.caseWidth * unit
-    val bodyHeight = geometry.bodyHeight * unit
-    val bodyLeft = centerX - bodyWidth / 2f
-    val bodyTop = originY + 106f * unit
-    val hinge = Offset(centerX, bodyTop + 1.5f * unit)
-    val leftInCase = leftLift > -8f * unit
-    val rightInCase = rightLift > -8f * unit
-
-    if (showCase) {
-        drawOval(
-            color = Color(0xFF7B8798).copy(alpha = 0.20f),
-            topLeft = Offset(bodyLeft - 18f * unit, bodyTop + bodyHeight - 1f * unit),
-            size = Size(bodyWidth + 36f * unit, 13f * unit),
-        )
-        drawOval(
-            color = Color(0xFF5F6A78).copy(alpha = 0.12f),
-            topLeft = Offset(bodyLeft + 16f * unit, bodyTop + bodyHeight + 1f * unit),
-            size = Size(bodyWidth - 32f * unit, 7f * unit),
-        )
-    }
-
-    // Buds that are still in the case are drawn behind the front shell. This
-    // masks their lower stems naturally instead of clipping a bitmap.
-    if (showCase && leftInCase) {
-        drawEarbud(
-            center = Offset(centerX - bodyWidth * 0.215f, bodyTop + 8f * unit),
-            geometry = geometry,
-            unit = unit,
-            tilt = -7f,
-            alpha = 0.96f,
-        )
-    }
-    if (showCase && rightInCase) {
-        drawEarbud(
-            center = Offset(centerX + bodyWidth * 0.215f, bodyTop + 8f * unit),
-            geometry = geometry,
-            unit = unit,
-            tilt = 7f,
-            alpha = 0.96f,
-        )
-    }
-
-    if (showCase) {
-        drawCaseBody(
-            left = bodyLeft,
-            top = bodyTop,
-            width = bodyWidth,
-            height = bodyHeight,
-            corner = geometry.cornerRadius * unit,
-            openProgress = openProgress,
-        )
-        drawCaseInterior(
-            left = bodyLeft,
-            top = bodyTop,
-            width = bodyWidth,
-            openProgress = openProgress,
-            unit = unit,
-        )
-        drawCaseLid(
-            left = bodyLeft,
-            top = bodyTop,
-            width = bodyWidth,
-            height = geometry.lidHeight * unit,
-            corner = geometry.cornerRadius * 0.94f * unit,
-            hinge = hinge,
-            openProgress = openProgress,
-            unit = unit,
-        )
-        drawChargingLight(
-            center = Offset(centerX, bodyTop + bodyHeight * 0.54f),
-            unit = unit,
-            charging = caseCharging,
-        )
-    }
-
-    // Removed buds are rendered above the case. Their horizontal separation
-    // increases as they rise, which reads as a real two-object lift rather
-    // than a single PNG being translated as one unit.
-    if (!leftInCase) {
-        val progress = (-leftLift / unit / 52f).coerceIn(0f, 1f)
-        drawEarbud(
-            center = Offset(
-                centerX - bodyWidth * 0.215f - 17f * unit * progress,
-                bodyTop + 8f * unit + leftLift,
-            ),
-            geometry = geometry,
-            unit = unit,
-            tilt = -10f,
-            alpha = 1f,
-        )
-    }
-    if (!rightInCase) {
-        val progress = (-rightLift / unit / 52f).coerceIn(0f, 1f)
-        drawEarbud(
-            center = Offset(
-                centerX + bodyWidth * 0.215f + 17f * unit * progress,
-                bodyTop + 8f * unit + rightLift,
-            ),
-            geometry = geometry,
-            unit = unit,
-            tilt = 10f,
-            alpha = 1f,
-        )
-    }
-}
 
 private fun DrawScope.drawCaseBody(
     left: Float,

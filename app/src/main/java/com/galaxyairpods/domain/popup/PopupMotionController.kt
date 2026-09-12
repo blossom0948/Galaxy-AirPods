@@ -129,6 +129,10 @@ class PopupMotionController {
     }
 
     fun show(state: AirPodsState, mode: PopupMode = PopupMode.KNOWN_DEVICE_STATUS) {
+        if (_state.value.isVisible && _state.value.phase != PopupPhase.EXITING) {
+            dispatch(PopupEvent.BatteryUpdated(state))
+            return
+        }
         _state.update { current ->
             current.copy(
                 phase = PopupPhase.ENTERING,

@@ -25,6 +25,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -146,12 +147,13 @@ fun BatteryItem(
 
     Surface(
         modifier = modifier
+            .graphicsLayer { this.alpha = alpha }
             .semantics {
                 contentDescription = (labelOverride ?: slot.label) + " 배터리 " +
                     (battery?.let { it.toString() + " 퍼센트" } ?: "확인 불가")
             },
         shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = alpha),
+        color = MaterialTheme.colorScheme.surfaceVariant,
     ) {
         Column(
             modifier = Modifier.padding(vertical = 12.dp, horizontal = 8.dp),

@@ -12,8 +12,8 @@ android {
         applicationId = "com.galaxyairpods"
         minSdk = 29
         targetSdk = 35
-        versionCode = 37
-        versionName = "0.4.15"
+        versionCode = 38
+        versionName = "0.4.16"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -46,6 +46,10 @@ android {
         buildConfig = true
     }
 
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -75,7 +79,7 @@ dependencies {
     implementation("org.lsposed.hiddenapibypass:hiddenapibypass:6.1")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
-
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
 }

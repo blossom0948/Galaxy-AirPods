@@ -11,6 +11,16 @@ import org.junit.Test
 
 class PopupMotionControllerTest {
     @Test
+    fun repeatedShowUpdatesOnePopupWithoutRestartingTheProductClock() {
+        val controller = PopupMotionController()
+        controller.show(liveState())
+        val id = controller.state.value.animationId
+        controller.show(liveState().copy(leftBattery = 64))
+        assertEquals(id, controller.state.value.animationId)
+        assertEquals(64, controller.state.value.deviceState.leftBattery)
+    }
+
+    @Test
     fun connectedMorphsExistingSurface() {
         val controller = PopupMotionController()
         controller.show(liveState())
