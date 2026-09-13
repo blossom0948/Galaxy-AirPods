@@ -146,6 +146,11 @@ internal class PerDeviceWearStabilizer(
         val validated = validator.validate(candidate)
         if (validated == null) {
             progress.remove(key)
+            // An invalid/unknown/conflicting frame invalidates the previous
+            // stable observation for this transport as well. Otherwise a
+            // later frame from the other transport could be compared against
+            // stale evidence and incorrectly become CONFLICT.
+            stable.remove(key)
             return null
         }
 

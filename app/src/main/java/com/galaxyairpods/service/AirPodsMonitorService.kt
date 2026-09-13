@@ -252,7 +252,14 @@ class AirPodsMonitorService : Service() {
         serviceScope.launch {
             while (isActive) {
                 if (wearDetectionEnabled && automaticMediaControlEnabled) {
-                    mediaPlaybackController.onConnectionEvidenceChanged(repository.state.value)
+                    val current = repository.state.value
+                    mediaPlaybackController.onConnectionEvidenceChanged(current)
+                    // A stable wear frame can arrive just before Samsung
+                    // publishes AudioDeviceInfo. Re-submit the current fresh
+                    // frame after route polling so one-ear transitions are not
+                    // lost at that boundary. The controller's duplicate guard
+                    // makes this safe on every poll.
+                    mediaPlaybackController.onWearStateChanged(current)
                 }
                 delay(MEDIA_ROUTE_POLL_MS)
             }

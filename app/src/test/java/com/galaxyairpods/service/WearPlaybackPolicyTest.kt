@@ -1,10 +1,44 @@
 package com.galaxyairpods.service
 
+import com.galaxyairpods.domain.model.AirPodsState
 import com.galaxyairpods.domain.model.AirPodsWearState
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Test
+import org.junit.Assert.assertTrue
 
 class WearPlaybackPolicyTest {
+    @Test
+    fun unknownMediaObservationIsNeverTreatedAsPlaying() {
+        assertTrue(mediaWasPlayingFromObservation(MediaPlaybackObservation.PLAYING))
+        assertFalse(mediaWasPlayingFromObservation(MediaPlaybackObservation.NOT_PLAYING))
+        assertFalse(mediaWasPlayingFromObservation(MediaPlaybackObservation.UNKNOWN))
+    }
+
+    @Test
+    fun freshWearEvidenceRequiresSourceAndMatchingProfile() {
+        val base = AirPodsState(
+            deviceProfileId = "profile-a",
+            wearState = AirPodsWearState.LEFT_IN_EAR,
+            wearSource = null,
+            wearCapturedAtElapsedMs = 1_000L,
+            wearExpiresAtElapsedMs = 2_000L,
+            wearDeviceProfileId = "profile-a",
+        )
+
+        assertFalse(base.hasFreshWearEvidenceAt(1_500L))
+        assertTrue(
+            base.copy(wearSource = "BLE_PUBLIC_EAR_STATE")
+                .hasFreshWearEvidenceAt(1_500L),
+        )
+        assertFalse(
+            base.copy(
+                wearSource = "BLE_PUBLIC_EAR_STATE",
+                wearDeviceProfileId = "profile-b",
+            ).hasFreshWearEvidenceAt(1_500L),
+        )
+    }
+
     @Test
     fun eventDrivenAapMayDefineAChangeAfterAQuietPeriod() {
         assertEquals(

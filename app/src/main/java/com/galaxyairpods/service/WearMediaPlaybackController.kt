@@ -40,10 +40,29 @@ internal fun shouldResetWearTransition(
 }
 
 /** What the controller can prove about the media app at this instant. */
-private enum class MediaPlaybackObservation {
+internal enum class MediaPlaybackObservation {
     PLAYING,
     NOT_PLAYING,
     UNKNOWN,
+}
+
+/** UNKNOWN is not proof that a media app is playing. */
+internal fun mediaWasPlayingFromObservation(
+    observation: MediaPlaybackObservation,
+): Boolean = observation == MediaPlaybackObservation.PLAYING
+
+internal fun AirPodsState.hasFreshWearEvidenceAt(nowElapsedMs: Long): Boolean {
+    if (wearState == AirPodsWearState.UNKNOWN || wearState == AirPodsWearState.CONFLICT) {
+        return false
+    }
+    val profileMatches = deviceProfileId != null &&
+        wearDeviceProfileId == deviceProfileId
+    val sourcePresent = !wearSource.isNullOrBlank()
+    val elapsedFresh = wearCapturedAtElapsedMs != null &&
+        wearExpiresAtElapsedMs != null &&
+        nowElapsedMs >= wearCapturedAtElapsedMs &&
+        nowElapsedMs <= wearExpiresAtElapsedMs
+    return profileMatches && sourcePresent && elapsedFresh
 }
 
 /**
@@ -80,6 +99,12 @@ internal class WearPlaybackPolicy {
             inserted -> WearMediaAction.NONE
             else -> WearMediaAction.NONE
         }
+    }
+
+    /** Allows the route gate to admit only a safe removal during route lag. */
+    fun isRemovalCandidate(state: AirPodsWearState): Boolean {
+        val currentCount = state.toEarCount() ?: return false
+        return previousEarCount?.let { currentCount < it } == true
     }
 
     fun cancelResume() {
@@ -125,6 +150,7 @@ internal class WearMediaPlaybackController(
     private var pausedWithMediaKeyAtElapsedMs: Long? = null
     private var lastWearEvidenceCapturedAtElapsedMs: Long? = null
     private var lastWearEvidenceSource: String? = null
+    private var lastWearEvidenceState: AirPodsWearState? = null
     private var lastTargetRouteAtElapsedMs: Long? = null
     private var lastMediaWasPlaying = false
 
@@ -133,6 +159,8 @@ internal class WearMediaPlaybackController(
             policy.reset()
             clearPausedSession()
             lastWearEvidenceCapturedAtElapsedMs = null
+            lastWearEvidenceSource = null
+            lastWearEvidenceState = null
             Log.i(
                 TAG,
                 "wear_state ignored state=${state.wearState} reason=STALE_OR_UNVERIFIED_EVIDENCE",
@@ -141,6 +169,15 @@ internal class WearMediaPlaybackController(
         }
         val capturedAtElapsedMs = state.wearCapturedAtElapsedMs!!
         val previousCapturedAtElapsedMs = lastWearEvidenceCapturedAtElapsedMs
+        if (capturedAtElapsedMs == previousCapturedAtElapsedMs &&
+            state.wearSource == lastWearEvidenceSource &&
+            state.wearState == lastWearEvidenceState
+        ) {
+            // The monitor polls the route independently of wear events. The
+            // same sample must be retryable before route proof arrives, but
+            // must not trigger duplicate media actions after it is accepted.
+            return@withLock
+        }
         if (shouldResetWearTransition(
                 previousCapturedAtElapsedMs = previousCapturedAtElapsedMs,
                 currentCapturedAtElapsedMs = capturedAtElapsedMs,
@@ -157,10 +194,10 @@ internal class WearMediaPlaybackController(
             // the entry point above and never initializes this policy.
             policy.reset()
             clearPausedSession()
+            lastWearEvidenceCapturedAtElapsedMs = null
             lastWearEvidenceSource = null
+            lastWearEvidenceState = null
         }
-        lastWearEvidenceCapturedAtElapsedMs = capturedAtElapsedMs
-        lastWearEvidenceSource = state.wearSource
         val route = routeGate.check(state)
         val nowElapsedMs = SystemClock.elapsedRealtime()
         val routeWasRecentlyActive = lastTargetRouteAtElapsedMs?.let { lastActive ->
@@ -177,19 +214,30 @@ internal class WearMediaPlaybackController(
             )
             return@withLock
         }
+        val routeCanEvaluate = route.activeForTarget ||
+            // A disappearing output can precede the final removal frame. In
+            // that narrow grace window allow a proven removal to pause, but
+            // defer insertion/resume until the target route is visible again.
+            (routeWasRecentlyActive &&
+                (route.profileConnected || policy.isRemovalCandidate(state.wearState)))
+        if (!routeCanEvaluate) {
+            Log.i(
+                TAG,
+                "wear_state deferred state=${state.wearState} reason=ROUTE_PROOF_PENDING",
+            )
+            return@withLock
+        }
+        lastWearEvidenceCapturedAtElapsedMs = capturedAtElapsedMs
+        lastWearEvidenceSource = state.wearSource
+        lastWearEvidenceState = state.wearState
         val currentSession = sessionResolver.currentPlaying()
         val mediaPlayingNow = currentSession != null || audioManager?.isMusicActive == true
         val mediaObservation = mediaPlaybackObservation(currentSession)
         val mediaWasPlaying = if (route.activeForTarget) {
-            when (mediaObservation) {
-                MediaPlaybackObservation.PLAYING -> true
-                MediaPlaybackObservation.NOT_PLAYING -> false
-                // Without notification access Android does not expose a
-                // session state. An explicit PAUSE key is idempotent, so make
-                // the removal best-effort; resume is still gated by a
-                // confirmed pause below.
-                MediaPlaybackObservation.UNKNOWN -> true
-            }
+            // Unknown playback is not evidence of PLAYING. This prevents a
+            // missing NotificationListener/AudioManager signal from pausing
+            // an already-stopped app and registering a false auto-resume.
+            mediaWasPlayingFromObservation(mediaObservation)
         } else {
             // On Samsung, removing the only active bud can make the output
             // disappear before the final OUT_OF_EAR frame is delivered. The
@@ -217,18 +265,6 @@ internal class WearMediaPlaybackController(
                 "availability=${sessionResolver.availability()}",
         )
 
-        val routeAuthorizesAction = route.activeForTarget ||
-            // A profile callback and AudioDeviceInfo update can be a few
-            // hundred milliseconds apart on Samsung. A recent target route
-            // plus current profile proof is enough to let an auto-paused
-            // session resume; a nearby advertisement alone is never enough.
-            (routeWasRecentlyActive &&
-                (route.profileConnected || action == WearMediaAction.PAUSE))
-        if (!routeAuthorizesAction) {
-            policy.cancelResume()
-            return@withLock
-        }
-
         when (action) {
             WearMediaAction.PAUSE -> pause(currentSession)
             WearMediaAction.PLAY -> resumeIfSameSession()
@@ -241,6 +277,7 @@ internal class WearMediaPlaybackController(
         clearPausedSession()
         lastWearEvidenceCapturedAtElapsedMs = null
         lastWearEvidenceSource = null
+        lastWearEvidenceState = null
         lastTargetRouteAtElapsedMs = null
         lastMediaWasPlaying = false
     }
@@ -483,23 +520,16 @@ internal class WearMediaPlaybackController(
     ): MediaPlaybackObservation = when {
         currentSession != null || audioManager?.isMusicActive == true ->
             MediaPlaybackObservation.PLAYING
-        sessionResolver.availability() == MediaSessionAvailability.AVAILABLE ->
+        // A false AudioManager signal is explicit enough to classify the
+        // current route as not playing even when notification access is off.
+        audioManager?.isMusicActive == false ||
+            sessionResolver.availability() == MediaSessionAvailability.AVAILABLE ->
             MediaPlaybackObservation.NOT_PLAYING
         else -> MediaPlaybackObservation.UNKNOWN
     }
 
     private fun AirPodsState.hasFreshWearEvidence(): Boolean {
-        if (wearState == AirPodsWearState.UNKNOWN || wearState == AirPodsWearState.CONFLICT) {
-            return false
-        }
-        val profileMatches = deviceProfileId != null &&
-            wearDeviceProfileId == deviceProfileId
-        val now = SystemClock.elapsedRealtime()
-        val elapsedFresh = wearCapturedAtElapsedMs != null &&
-            wearExpiresAtElapsedMs != null &&
-            now >= wearCapturedAtElapsedMs &&
-            now <= wearExpiresAtElapsedMs
-        return profileMatches && elapsedFresh
+        return hasFreshWearEvidenceAt(SystemClock.elapsedRealtime())
     }
 
     private fun dispatch(keyCode: Int): Boolean {

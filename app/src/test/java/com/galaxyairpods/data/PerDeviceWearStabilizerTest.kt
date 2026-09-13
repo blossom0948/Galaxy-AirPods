@@ -77,6 +77,43 @@ class PerDeviceWearStabilizerTest {
     }
 
     @Test
+    fun invalidFrameAlsoClearsThePreviouslyStableTransportObservation() {
+        var now = 8_000L
+        val stabilizer = PerDeviceWearStabilizer(
+            requiredFrames = 1,
+            requiredFramesForSource = { 1 },
+            clock = { now },
+        )
+
+        assertEquals(
+            AirPodsWearState.BOTH_IN_EAR,
+            stabilizer.accept(candidate("device-a", now))?.state,
+        )
+
+        now = 8_100L
+        assertNull(
+            stabilizer.accept(
+                candidate("device-a", now, state = AirPodsWearState.UNKNOWN),
+            ),
+        )
+
+        // If the old BLE observation survived the invalid frame, this fresh
+        // AAP NONE_IN_EAR event would be incorrectly surfaced as CONFLICT.
+        now = 8_200L
+        assertEquals(
+            AirPodsWearState.NONE_IN_EAR,
+            stabilizer.accept(
+                candidate(
+                    device = "device-a",
+                    capturedAt = now,
+                    source = WearEventSource.AAP_CLASSIC,
+                    state = AirPodsWearState.NONE_IN_EAR,
+                ),
+            )?.state,
+        )
+    }
+
+    @Test
     fun staleOutOfOrderAndLargeGapFramesAreNotCounted() {
         var now = 3_000L
         val stabilizer = PerDeviceWearStabilizer(

@@ -45,11 +45,11 @@ data class UpdateInfo(
 )
 
 class UpdateManager(context: Context) {
-    private val context = context.applicationContext
+    private val appContext = context.applicationContext
     private val _state = MutableStateFlow<UpdateState>(UpdateState.Idle)
     val state: StateFlow<UpdateState> = _state.asStateFlow()
     private val mutex = Mutex()
-    private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+    private val preferences = appContext.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
     @Volatile
     private var lastAutomaticCheckAt = 0L
 
@@ -61,7 +61,7 @@ class UpdateManager(context: Context) {
         }
 
         mutex.withLock {
-            if (context.packageManager.canRequestPackageInstalls()) {
+            if (appContext.packageManager.canRequestPackageInstalls()) {
                 // A blocked update becomes eligible again after the user grants
                 // this permission. Keep the attempt timestamp so an install
                 // session that is already waiting for confirmation is not started
@@ -81,10 +81,10 @@ class UpdateManager(context: Context) {
                         .remove(ATTEMPTED_AT_KEY)
                         .remove(BLOCKED_VERSION_KEY)
                         .apply()
-                    UpdateNotifications.cancelAvailable(context)
+                    UpdateNotifications.cancelAvailable(appContext)
                     _state.value = UpdateState.UpToDate
                 } else {
-                    UpdateNotifications.notifyAvailable(context, info)
+                    UpdateNotifications.notifyAvailable(appContext, info)
                     _state.value = UpdateState.Available(info)
                     val attempted = preferences.getInt(ATTEMPTED_VERSION_KEY, -1)
                     val attemptedAt = preferences.getLong(ATTEMPTED_AT_KEY, 0L)
@@ -150,7 +150,7 @@ class UpdateManager(context: Context) {
     }
 
     private suspend fun downloadAndPrepare(info: UpdateInfo): File = withContext(Dispatchers.IO) {
-        val directory = File(context.cacheDir, "updates").apply { mkdirs() }
+        val directory = File(appContext.cacheDir, "updates").apply { mkdirs() }
         val target = File(directory, "AirPodsGalaxy-${info.versionCode}.apk")
         download(info, target)
         verifyApk(target, info)
@@ -158,22 +158,22 @@ class UpdateManager(context: Context) {
     }
 
     private fun install(info: UpdateInfo, file: File) {
-        if (!context.packageManager.canRequestPackageInstalls()) {
+        if (!appContext.packageManager.canRequestPackageInstalls()) {
             val settingsIntent = Intent(
                 Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                Uri.parse("package:${context.packageName}"),
+                Uri.parse("package:${appContext.packageName}"),
             ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             preferences.edit().putInt(BLOCKED_VERSION_KEY, info.versionCode).apply()
-            runCatching { context.startActivity(settingsIntent) }
-                .onFailure { UpdateNotifications.notifyInstallPermission(context) }
+            runCatching { appContext.startActivity(settingsIntent) }
+                .onFailure { UpdateNotifications.notifyInstallPermission(appContext) }
             return
         }
 
-        val packageInstaller = context.packageManager.packageInstaller
+        val packageInstaller = appContext.packageManager.packageInstaller
         val params = PackageInstaller.SessionParams(
             PackageInstaller.SessionParams.MODE_FULL_INSTALL,
         ).apply {
-            setAppPackageName(context.packageName)
+            setAppPackageName(appContext.packageName)
             setInstallReason(PackageManager.INSTALL_REASON_USER)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 // Ask Android to complete without a prompt when policy allows
@@ -194,7 +194,7 @@ class UpdateManager(context: Context) {
                 }
                 session.setStagingProgress(1f)
 
-                val callbackIntent = Intent(context, UpdateInstallReceiver::class.java)
+                val callbackIntent = Intent(appContext, UpdateInstallReceiver::class.java)
                     .setAction(UpdateInstallReceiver.ACTION_INSTALL_STATUS)
                 val pendingIntentFlags = PendingIntent.FLAG_UPDATE_CURRENT or
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -203,7 +203,7 @@ class UpdateManager(context: Context) {
                         0
                     }
                 val statusIntent = PendingIntent.getBroadcast(
-                    context,
+                    appContext,
                     sessionId,
                     callbackIntent,
                     pendingIntentFlags,
@@ -370,9 +370,9 @@ class UpdateManager(context: Context) {
 
     private fun verifyApk(file: File, info: UpdateInfo) {
         if (!file.isFile || file.length() <= 0L) error("APK 파일이 비어 있습니다")
-        val packageInfo = context.packageManager.getPackageArchiveInfo(file.path, 0)
+        val packageInfo = appContext.packageManager.getPackageArchiveInfo(file.path, 0)
             ?: error("APK 파일 형식을 읽을 수 없습니다")
-        if (packageInfo.packageName != context.packageName) {
+        if (packageInfo.packageName != appContext.packageName) {
             error("다른 앱의 APK가 다운로드되었습니다")
         }
         val downloadedVersionCode = packageInfo.longVersionCode

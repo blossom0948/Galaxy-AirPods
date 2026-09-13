@@ -1,13 +1,16 @@
 package com.galaxyairpods.domain
 
 import com.galaxyairpods.domain.model.AirPodsModel
+import com.galaxyairpods.domain.model.AirPodsConnectionState
 import com.galaxyairpods.domain.model.AirPodsState
+import com.galaxyairpods.domain.model.AirPodsWearState
 import com.galaxyairpods.domain.model.BatterySlot
 import com.galaxyairpods.domain.model.ChargingEvidence
 import com.galaxyairpods.domain.model.ChargingState
 import com.galaxyairpods.domain.model.DataConfidence
 import com.galaxyairpods.domain.model.mergeKnownValuesFrom
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class AirPodsStateTest {
@@ -134,5 +137,56 @@ class AirPodsStateTest {
 
         assertEquals(null, resolved.chargingFor(BatterySlot.LEFT, now))
         assertEquals(null, resolved.leftCharging)
+    }
+
+    @Test
+    fun liveConnectionChargingAndWearEvidenceNeverComeFromBatteryFallback() {
+        val now = System.currentTimeMillis()
+        val elapsedNow = 1_000L
+        val live = AirPodsState(
+            deviceProfileId = "profile-a",
+            connectionState = AirPodsConnectionState.NEARBY_ONLY,
+            connected = false,
+            detected = false,
+            a2dpConnected = false,
+            headsetConnected = false,
+            aapReady = false,
+            leftCharging = null,
+            wearState = AirPodsWearState.UNKNOWN,
+        )
+        val fallback = AirPodsState(
+            deviceProfileId = "profile-a",
+            connected = true,
+            detected = true,
+            connectionState = AirPodsConnectionState.ANDROID_CONNECTED,
+            a2dpConnected = true,
+            headsetConnected = true,
+            aapReady = true,
+            leftCharging = true,
+            leftChargingEvidence = ChargingEvidence(
+                state = ChargingState.CHARGING,
+                source = "AAP_CLASSIC_EXACT",
+                capturedAt = now,
+                expiresAt = now + 10_000L,
+                proof = "AAP_0x0004",
+            ),
+            wearState = AirPodsWearState.BOTH_IN_EAR,
+            wearSource = "AAP_CLASSIC_0x0006",
+            wearCapturedAtElapsedMs = elapsedNow,
+            wearExpiresAtElapsedMs = elapsedNow + 10_000L,
+            wearDeviceProfileId = "profile-a",
+        )
+
+        val merged = live.mergeKnownValuesFrom(fallback)
+
+        assertFalse(merged.connected)
+        assertFalse(merged.detected)
+        assertFalse(merged.a2dpConnected)
+        assertFalse(merged.headsetConnected)
+        assertFalse(merged.aapReady)
+        assertEquals(null, merged.leftCharging)
+        assertEquals(ChargingState.UNKNOWN, merged.leftChargingEvidence.state)
+        assertEquals(AirPodsWearState.UNKNOWN, merged.wearState)
+        assertEquals(null, merged.wearSource)
     }
 }

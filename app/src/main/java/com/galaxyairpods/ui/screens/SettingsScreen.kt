@@ -125,10 +125,14 @@ fun SettingsScreen(
                 Text("권한", style = MaterialTheme.typography.titleMedium)
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    if (PermissionManager.allGranted(context, PermissionManager.runtimePermissions())) {
-                        "허용됨"
+                    if (PermissionManager.allGranted(context, PermissionManager.bluetoothPermissions())) {
+                        if (PermissionManager.allGranted(context, PermissionManager.notificationPermissions())) {
+                            "Bluetooth·알림 허용됨"
+                        } else {
+                            "Bluetooth 허용됨 · 알림은 선택 사항"
+                        }
                     } else {
-                        "Bluetooth·위치·알림 권한이 필요합니다"
+                        "Bluetooth 권한이 필요합니다 · 알림은 선택 사항"
                     },
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

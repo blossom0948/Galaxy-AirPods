@@ -49,7 +49,10 @@ fun HomeScreen(
     val context = androidx.compose.ui.platform.LocalContext.current
     var permissionRefresh by remember { mutableIntStateOf(0) }
     val permissionsGranted = remember(permissionRefresh) {
-        PermissionManager.allGranted(context, PermissionManager.runtimePermissions())
+        // Notification permission is optional for Bluetooth detection. It
+        // enables the foreground notification/media-session bridge, but a
+        // denial must not stop scanning or wear detection.
+        PermissionManager.allGranted(context, PermissionManager.bluetoothPermissions())
     }
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -94,7 +97,7 @@ fun HomeScreen(
                     Text("권한 필요", style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "주변 기기·위치·알림 권한을 허용해야 AirPods를 감지합니다.",
+                        "Bluetooth 권한을 허용해야 AirPods를 감지합니다. 알림 권한은 보조 기능입니다.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
